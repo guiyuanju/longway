@@ -22,6 +22,7 @@
 - Serialize an action-output text reference as a `WFTextTokenString` containing one object-replacement character and an attachment with `Type`, `OutputName`, and `OutputUUID`.
 - Lower `+`, `-`, `*`, and `/` expressions with at least two operands to explicit `is.workflow.actions.math` actions. Materialize a literal left operand with `is.workflow.actions.number`, chain variadic operations left-to-right, and identify each result as `Calculation Result`.
 - Represent Boolean values as typed Text producers containing `#t` or `#f`. Lower `not`, short-circuit `and`, and short-circuit `or` to `is.workflow.actions.conditional` blocks sharing a `GroupingIdentifier`; reference the End If UUID as `If Result`.
+- Conditional `WFInput` must wrap the `WFTextTokenAttachment` as `{ Type: "Variable", Variable: attachment }`. A bare attachment passes plist validation but imports with an unset If condition.
 - Keep normal shortcuts out of the Share Sheet by emitting empty `WFWorkflowTypes` and disabling shortcut input variables.
 - Signing remains opt-in through Apple's `shortcuts sign` command. Replacing a signed destination must be atomic so a failed replacement does not destroy the existing file.
 - Generated `.shortcut` artifacts are ignored and should be rebuilt rather than committed.

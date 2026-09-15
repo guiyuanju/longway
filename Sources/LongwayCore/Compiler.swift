@@ -346,7 +346,7 @@ public struct LongwayCompiler {
             "WFCondition": 4,
             "WFConditionalActionString": "#t",
             "WFControlFlowMode": 0,
-            "WFInput": actionOutputAttachment(conditionOutput)
+            "WFInput": conditionalInput(conditionOutput)
         ]))
 
         actions.append(contentsOf: trueBranch.actions)
@@ -542,6 +542,13 @@ public struct LongwayCompiler {
         [
             "Value": actionOutputValue(output),
             "WFSerializationType": "WFTextTokenAttachment"
+        ]
+    }
+
+    private func conditionalInput(_ output: ActionOutputReference) -> [String: Any] {
+        [
+            "Type": "Variable",
+            "Variable": actionOutputAttachment(output)
         ]
     }
 

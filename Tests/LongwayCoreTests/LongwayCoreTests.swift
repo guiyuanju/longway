@@ -129,7 +129,10 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(start["WFCondition"] as? Int, 4)
         XCTAssertEqual(start["WFConditionalActionString"] as? String, "#t")
         let input = try XCTUnwrap(start["WFInput"] as? [String: Any])
-        let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+        XCTAssertEqual(input["Type"] as? String, "Variable")
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        XCTAssertEqual(variable["WFSerializationType"] as? String, "WFTextTokenAttachment")
+        let inputValue = try XCTUnwrap(variable["Value"] as? [String: Any])
         XCTAssertEqual(inputValue["OutputUUID"] as? String, inputUUID)
 
         XCTAssertEqual(textLiteral(in: actions[2]), "#f")
