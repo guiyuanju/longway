@@ -138,6 +138,8 @@ public struct LongwayCompiler {
                 text = textTokenString(value)
             case let .literalNumber(value):
                 text = textTokenString(formatNumber(value))
+            case let .literalBoolean(value):
+                text = textTokenString(value ? "#t" : "#f")
             case let .output(output):
                 text = actionOutputTokenString(output)
             }
@@ -204,19 +206,28 @@ public struct LongwayCompiler {
             guard let head = parts.first, case let .symbol(operation) = head.value else {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
-            guard let shortcutOperation = mathOperation(operation) else {
-                throw LongwayError("unknown value form '\(operation)'", at: head.location)
+            let operands = Array(parts.dropFirst())
+            if let shortcutOperation = mathOperation(operation) {
+                return try compileMath(
+                    operation,
+                    shortcutOperation: shortcutOperation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
             }
-            return try compileMath(
-                operation,
-                shortcutOperation: shortcutOperation,
-                operands: Array(parts.dropFirst()),
-                at: expression.location,
-                environment: environment
-            )
+            if operation == "and" || operation == "or" || operation == "not" {
+                return try compileLogical(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
+            throw LongwayError("unknown value form '\(operation)'", at: head.location)
 
-        case .boolean:
-            throw LongwayError("unsupported value type", at: expression.location)
+        case let .boolean(value):
+            return CompiledValue(actions: [], value: .literalBoolean(value))
         }
     }
 
@@ -258,24 +269,182 @@ public struct LongwayCompiler {
         return CompiledValue(actions: actions, value: .output(result))
     }
 
+    private func compileLogical(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        if operation == "not" {
+            guard operands.count == 1 else {
+                throw LongwayError("not expects 1 operand, got \(operands.count)", at: location)
+            }
+            let operand = try compileValue(operands[0], environment: environment)
+            try requireBoolean(operand, operation: operation, at: operands[0].location)
+            return lowerConditional(
+                condition: operand,
+                trueBranch: CompiledValue(actions: [], value: .literalBoolean(false)),
+                falseBranch: CompiledValue(actions: [], value: .literalBoolean(true))
+            )
+        }
+
+        guard operands.count >= 2 else {
+            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+        }
+        return try compileShortCircuitLogical(
+            operation,
+            operands: operands,
+            environment: environment
+        )
+    }
+
+    private func compileShortCircuitLogical(
+        _ operation: String,
+        operands: [Expression],
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        let first = try compileValue(operands[0], environment: environment)
+        try requireBoolean(first, operation: operation, at: operands[0].location)
+
+        let remaining: CompiledValue
+        if operands.count == 2 {
+            remaining = try compileValue(operands[1], environment: environment)
+            try requireBoolean(remaining, operation: operation, at: operands[1].location)
+        } else {
+            remaining = try compileShortCircuitLogical(
+                operation,
+                operands: Array(operands.dropFirst()),
+                environment: environment
+            )
+        }
+
+        if operation == "and" {
+            return lowerConditional(
+                condition: first,
+                trueBranch: remaining,
+                falseBranch: CompiledValue(actions: [], value: .literalBoolean(false))
+            )
+        }
+        return lowerConditional(
+            condition: first,
+            trueBranch: CompiledValue(actions: [], value: .literalBoolean(true)),
+            falseBranch: remaining
+        )
+    }
+
+    private func lowerConditional(
+        condition: CompiledValue,
+        trueBranch: CompiledValue,
+        falseBranch: CompiledValue
+    ) -> CompiledValue {
+        var actions = condition.actions
+        let conditionOutput = materializeBoolean(condition.value, into: &actions)
+        let groupingIdentifier = UUID().uuidString
+
+        actions.append(action("is.workflow.actions.conditional", parameters: [
+            "GroupingIdentifier": groupingIdentifier,
+            "WFCondition": 4,
+            "WFConditionalActionString": "#t",
+            "WFControlFlowMode": 0,
+            "WFInput": actionOutputAttachment(conditionOutput)
+        ]))
+
+        actions.append(contentsOf: trueBranch.actions)
+        _ = emitBoolean(trueBranch.value, into: &actions)
+
+        actions.append(action("is.workflow.actions.conditional", parameters: [
+            "GroupingIdentifier": groupingIdentifier,
+            "WFControlFlowMode": 1
+        ]))
+
+        actions.append(contentsOf: falseBranch.actions)
+        _ = emitBoolean(falseBranch.value, into: &actions)
+
+        let resultUUID = UUID().uuidString
+        actions.append(action("is.workflow.actions.conditional", parameters: [
+            "GroupingIdentifier": groupingIdentifier,
+            "WFControlFlowMode": 2
+        ], uuid: resultUUID))
+
+        return CompiledValue(
+            actions: actions,
+            value: .output(ActionOutputReference(
+                type: .boolean,
+                name: "If Result",
+                uuid: resultUUID
+            ))
+        )
+    }
+
+    private func requireBoolean(
+        _ value: CompiledValue,
+        operation: String,
+        at location: SourceLocation
+    ) throws {
+        guard value.value.type == .boolean else {
+            throw LongwayError("\(operation) expects boolean operands", at: location)
+        }
+    }
+
     private func materialize(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
         switch value {
         case let .literalString(text):
-            let uuid = UUID().uuidString
-            actions.append(action("is.workflow.actions.gettext", parameters: [
-                "WFTextActionText": textTokenString(text)
-            ], uuid: uuid))
-            return ActionOutputReference(type: .text, name: "Text", uuid: uuid)
+            return emitText(textTokenString(text), type: .text, into: &actions)
 
         case .literalNumber:
             return materializeNumber(value, into: &actions)
 
+        case .literalBoolean:
+            return materializeBoolean(value, into: &actions)
+
         case let .output(output):
             return output
         }
+    }
+
+    private func materializeBoolean(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        switch value {
+        case let .literalBoolean(boolean):
+            return emitText(textTokenString(boolean ? "#t" : "#f"), type: .boolean, into: &actions)
+        case let .output(output):
+            precondition(output.type == .boolean)
+            return output
+        case .literalString, .literalNumber:
+            preconditionFailure("non-boolean value cannot be materialized as a boolean")
+        }
+    }
+
+    private func emitBoolean(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        switch value {
+        case let .literalBoolean(boolean):
+            return emitText(textTokenString(boolean ? "#t" : "#f"), type: .boolean, into: &actions)
+        case let .output(output):
+            precondition(output.type == .boolean)
+            return emitText(actionOutputTokenString(output), type: .boolean, into: &actions)
+        case .literalString, .literalNumber:
+            preconditionFailure("non-boolean value cannot be emitted as a boolean")
+        }
+    }
+
+    private func emitText(
+        _ text: [String: Any],
+        type: ValueType,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        let uuid = UUID().uuidString
+        actions.append(action("is.workflow.actions.gettext", parameters: [
+            "WFTextActionText": text
+        ], uuid: uuid))
+        return ActionOutputReference(type: type, name: "Text", uuid: uuid)
     }
 
     private func materializeNumber(
@@ -294,8 +463,8 @@ public struct LongwayCompiler {
             precondition(output.type == .number)
             return output
 
-        case .literalString:
-            preconditionFailure("text cannot be materialized as a number")
+        case .literalString, .literalBoolean:
+            preconditionFailure("non-number value cannot be materialized as a number")
         }
     }
 
@@ -305,8 +474,8 @@ public struct LongwayCompiler {
             return number
         case let .output(output):
             return actionOutputAttachment(output)
-        case .literalString:
-            preconditionFailure("text cannot be used as a number parameter")
+        case .literalString, .literalBoolean:
+            preconditionFailure("non-number value cannot be used as a number parameter")
         }
     }
 
@@ -403,6 +572,7 @@ public struct LongwayCompiler {
 private enum ValueType {
     case text
     case number
+    case boolean
 }
 
 private struct ActionOutputReference {
@@ -418,6 +588,7 @@ private struct CompiledValue {
     enum Value {
         case literalString(String)
         case literalNumber(Double)
+        case literalBoolean(Bool)
         case output(ActionOutputReference)
 
         var type: ValueType {
@@ -426,6 +597,8 @@ private struct CompiledValue {
                 .text
             case .literalNumber:
                 .number
+            case .literalBoolean:
+                .boolean
             case let .output(output):
                 output.type
             }

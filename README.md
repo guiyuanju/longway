@@ -61,6 +61,14 @@ Math uses prefix expressions with at least two operands. Operations are evaluate
     (show-result (* (+ x y) 2))))
 ```
 
+Logical expressions use `#t` and `#f`. `and` and `or` short-circuit by compiling to nested Shortcut If blocks; `not` compiles to one If/Otherwise/End If block:
+
+```scheme
+(shortcut "Logic"
+  (let ((enabled #t))
+    (show-result (and enabled (not #f)))))
+```
+
 Supported MVP forms:
 
 | Longway form | Apple Shortcut action |
@@ -69,6 +77,8 @@ Supported MVP forms:
 | `(let ((name value)) …)` | Materialized Text/Number values plus UUID references |
 | `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
 | `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
+| `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
+| `(not value)` | Boolean negation |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
 | `(wait 1.5)` | Wait |
@@ -98,4 +108,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports lexical string and number bindings, basic arithmetic, and a small set of action calls. Conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.
+Longway currently supports lexical string, number, and Boolean bindings; arithmetic and logical expressions; and a small set of action calls. Source-level conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.

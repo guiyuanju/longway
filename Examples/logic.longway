@@ -1,0 +1,3 @@
+(shortcut "Logic"
+  (let ((enabled #t))
+    (show-result (and enabled (not #f)))))
