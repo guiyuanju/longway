@@ -52,12 +52,23 @@ A string bound with `let` is materialized as a Text action. References to that b
 
 Bindings are lexically scoped. A `let` may contain multiple bindings and body forms; its initializers use the outer scope, as in Scheme `let` rather than `let*`.
 
+Math uses prefix expressions with at least two operands. Operations are evaluated from left to right and compile to explicit Number and Calculate actions:
+
+```scheme
+(shortcut "Math"
+  (let ((x 10)
+        (y 4))
+    (show-result (* (+ x y) 2))))
+```
+
 Supported MVP forms:
 
 | Longway form | Apple Shortcut action |
 | --- | --- |
 | `(show-result "value")` | Show Result with a literal parameter |
-| `(let ((name "value")) …)` | Text plus UUID-based references in its body |
+| `(let ((name value)) …)` | Materialized Text/Number values plus UUID references |
+| `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
+| `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
 | `(wait 1.5)` | Wait |
@@ -87,4 +98,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports lexical string bindings and a small set of action calls. Conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.
+Longway currently supports lexical string and number bindings, basic arithmetic, and a small set of action calls. Conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.

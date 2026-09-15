@@ -1,0 +1,5 @@
+(shortcut "Math"
+  (let ((x 10)
+        (y 4))
+    (let ((result (* (+ x y) 2)))
+      (show-result result))))

@@ -108,23 +108,9 @@ public struct LongwayCompiler {
                 throw LongwayError("duplicate let binding '\(name)'", at: pair[0].location)
             }
 
-            switch pair[1].value {
-            case let .string(value):
-                let uuid = UUID().uuidString
-                actions.append(action("is.workflow.actions.gettext", parameters: [
-                    "WFTextActionText": textTokenString(value)
-                ], uuid: uuid))
-                localBindings[name] = ActionOutputReference(name: "Text", uuid: uuid)
-
-            case let .symbol(sourceName):
-                guard let output = environment[sourceName] else {
-                    throw LongwayError("unknown variable '\(sourceName)'", at: pair[1].location)
-                }
-                localBindings[name] = output
-
-            default:
-                throw LongwayError("let binding expects a string or text variable", at: pair[1].location)
-            }
+            let compiledValue = try compileValue(pair[1], environment: environment)
+            actions.append(contentsOf: compiledValue.actions)
+            localBindings[name] = materialize(compiledValue.value, into: &actions)
         }
 
         var bodyEnvironment = environment
@@ -145,19 +131,19 @@ public struct LongwayCompiler {
         switch actionName {
         case "show-result":
             try requireArgumentCount(1, action: actionName, arguments: arguments, at: location)
+            let compiledValue = try compileValue(arguments[0], environment: environment)
             let text: [String: Any]
-            switch arguments[0].value {
-            case let .string(value):
+            switch compiledValue.value {
+            case let .literalString(value):
                 text = textTokenString(value)
-            case let .symbol(name):
-                guard let output = environment[name] else {
-                    throw LongwayError("unknown variable '\(name)'", at: arguments[0].location)
-                }
+            case let .literalNumber(value):
+                text = textTokenString(formatNumber(value))
+            case let .output(output):
                 text = actionOutputTokenString(output)
-            default:
-                throw LongwayError("show-result expects a string or text variable", at: arguments[0].location)
             }
-            return [action("is.workflow.actions.showresult", parameters: ["Text": text], uuid: nil)]
+            return compiledValue.actions + [
+                action("is.workflow.actions.showresult", parameters: ["Text": text], uuid: nil)
+            ]
 
         case "notification":
             let value = try stringArgument(actionName, arguments: arguments, at: location)
@@ -181,6 +167,9 @@ public struct LongwayCompiler {
             guard case let .number(seconds) = arguments[0].value else {
                 throw LongwayError("wait expects a number", at: arguments[0].location)
             }
+            guard seconds.isFinite else {
+                throw LongwayError("wait duration must be finite", at: arguments[0].location)
+            }
             guard seconds >= 0 else {
                 throw LongwayError("wait duration cannot be negative", at: arguments[0].location)
             }
@@ -189,6 +178,151 @@ public struct LongwayCompiler {
         default:
             throw LongwayError("unknown action '\(actionName)'", at: nameLocation)
         }
+    }
+
+    private func compileValue(
+        _ expression: Expression,
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        switch expression.value {
+        case let .string(value):
+            return CompiledValue(actions: [], value: .literalString(value))
+
+        case let .number(value):
+            guard value.isFinite else {
+                throw LongwayError("number must be finite", at: expression.location)
+            }
+            return CompiledValue(actions: [], value: .literalNumber(value))
+
+        case let .symbol(name):
+            guard let output = environment[name] else {
+                throw LongwayError("unknown variable '\(name)'", at: expression.location)
+            }
+            return CompiledValue(actions: [], value: .output(output))
+
+        case let .list(parts):
+            guard let head = parts.first, case let .symbol(operation) = head.value else {
+                throw LongwayError("expected a value expression", at: expression.location)
+            }
+            guard let shortcutOperation = mathOperation(operation) else {
+                throw LongwayError("unknown value form '\(operation)'", at: head.location)
+            }
+            return try compileMath(
+                operation,
+                shortcutOperation: shortcutOperation,
+                operands: Array(parts.dropFirst()),
+                at: expression.location,
+                environment: environment
+            )
+
+        case .boolean:
+            throw LongwayError("unsupported value type", at: expression.location)
+        }
+    }
+
+    private func compileMath(
+        _ operation: String,
+        shortcutOperation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        guard operands.count >= 2 else {
+            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+        }
+
+        let first = try compileValue(operands[0], environment: environment)
+        guard first.value.type == .number else {
+            throw LongwayError("\(operation) expects number operands", at: operands[0].location)
+        }
+
+        var actions = first.actions
+        var result = materializeNumber(first.value, into: &actions)
+
+        for operand in operands.dropFirst() {
+            let compiledOperand = try compileValue(operand, environment: environment)
+            guard compiledOperand.value.type == .number else {
+                throw LongwayError("\(operation) expects number operands", at: operand.location)
+            }
+            actions.append(contentsOf: compiledOperand.actions)
+
+            let uuid = UUID().uuidString
+            actions.append(action("is.workflow.actions.math", parameters: [
+                "WFInput": actionOutputAttachment(result),
+                "WFMathOperation": shortcutOperation,
+                "WFMathOperand": numberParameter(compiledOperand.value)
+            ], uuid: uuid))
+            result = ActionOutputReference(type: .number, name: "Calculation Result", uuid: uuid)
+        }
+
+        return CompiledValue(actions: actions, value: .output(result))
+    }
+
+    private func materialize(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        switch value {
+        case let .literalString(text):
+            let uuid = UUID().uuidString
+            actions.append(action("is.workflow.actions.gettext", parameters: [
+                "WFTextActionText": textTokenString(text)
+            ], uuid: uuid))
+            return ActionOutputReference(type: .text, name: "Text", uuid: uuid)
+
+        case .literalNumber:
+            return materializeNumber(value, into: &actions)
+
+        case let .output(output):
+            return output
+        }
+    }
+
+    private func materializeNumber(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        switch value {
+        case let .literalNumber(number):
+            let uuid = UUID().uuidString
+            actions.append(action("is.workflow.actions.number", parameters: [
+                "WFNumberActionNumber": number
+            ], uuid: uuid))
+            return ActionOutputReference(type: .number, name: "Number", uuid: uuid)
+
+        case let .output(output):
+            precondition(output.type == .number)
+            return output
+
+        case .literalString:
+            preconditionFailure("text cannot be materialized as a number")
+        }
+    }
+
+    private func numberParameter(_ value: CompiledValue.Value) -> Any {
+        switch value {
+        case let .literalNumber(number):
+            return number
+        case let .output(output):
+            return actionOutputAttachment(output)
+        case .literalString:
+            preconditionFailure("text cannot be used as a number parameter")
+        }
+    }
+
+    private func mathOperation(_ symbol: String) -> String? {
+        switch symbol {
+        case "+": "+"
+        case "-": "-"
+        case "*": "×"
+        case "/": "÷"
+        default: nil
+        }
+    }
+
+    private func formatNumber(_ number: Double) -> String {
+        let description = String(number)
+        return description.hasSuffix(".0") ? String(description.dropLast(2)) : description
     }
 
     private func stringArgument(
@@ -228,16 +362,25 @@ public struct LongwayCompiler {
     private func actionOutputTokenString(_ output: ActionOutputReference) -> [String: Any] {
         [
             "Value": [
-                "attachmentsByRange": [
-                    "{0, 1}": [
-                        "OutputName": output.name,
-                        "OutputUUID": output.uuid,
-                        "Type": "ActionOutput"
-                    ]
-                ],
+                "attachmentsByRange": ["{0, 1}": actionOutputValue(output)],
                 "string": "\u{FFFC}"
             ],
             "WFSerializationType": "WFTextTokenString"
+        ]
+    }
+
+    private func actionOutputAttachment(_ output: ActionOutputReference) -> [String: Any] {
+        [
+            "Value": actionOutputValue(output),
+            "WFSerializationType": "WFTextTokenAttachment"
+        ]
+    }
+
+    private func actionOutputValue(_ output: ActionOutputReference) -> [String: Any] {
+        [
+            "OutputName": output.name,
+            "OutputUUID": output.uuid,
+            "Type": "ActionOutput"
         ]
     }
 
@@ -257,9 +400,37 @@ public struct LongwayCompiler {
     }
 }
 
+private enum ValueType {
+    case text
+    case number
+}
+
 private struct ActionOutputReference {
+    let type: ValueType
     let name: String
     let uuid: String
+}
+
+private struct CompiledValue {
+    let actions: [[String: Any]]
+    let value: Value
+
+    enum Value {
+        case literalString(String)
+        case literalNumber(Double)
+        case output(ActionOutputReference)
+
+        var type: ValueType {
+            switch self {
+            case .literalString:
+                .text
+            case .literalNumber:
+                .number
+            case let .output(output):
+                output.type
+            }
+        }
+    }
 }
 
 private struct Workflow {
