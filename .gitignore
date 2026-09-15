@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+*.shortcut
+.DS_Store

@@ -1,0 +1,4 @@
+(shortcut "Morning"
+  (notification "Good morning!")
+  (wait 1)
+  (open-url "https://example.com"))
