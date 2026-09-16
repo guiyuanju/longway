@@ -209,6 +209,131 @@ final class LongwayCoreTests: XCTestCase {
         }
     }
 
+    func testIfValueLowersToTypedShortcutResult() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Conditional"
+          (show-result (if #t "yes" "no")))
+        """)
+
+        XCTAssertEqual(result.actionCount, 7)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.gettext",
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.gettext",
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.gettext",
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.showresult"
+        ])
+        XCTAssertEqual(textLiteral(in: actions[2]), "yes")
+        XCTAssertEqual(textLiteral(in: actions[4]), "no")
+
+        let endParameters = try XCTUnwrap(actions[5]["WFWorkflowActionParameters"] as? [String: Any])
+        let endUUID = try XCTUnwrap(endParameters["UUID"] as? String)
+        let showParameters = try XCTUnwrap(actions[6]["WFWorkflowActionParameters"] as? [String: Any])
+        let showText = try XCTUnwrap(showParameters["Text"] as? [String: Any])
+        let showValue = try XCTUnwrap(showText["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(showValue["attachmentsByRange"] as? [String: Any])
+        let attachment = try XCTUnwrap(attachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputName"] as? String, "If Result")
+        XCTAssertEqual(attachment["OutputUUID"] as? String, endUUID)
+    }
+
+    func testIfNumberResultCanFeedArithmetic() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Conditional"
+          (let ((x 10) (y 20))
+            (show-result (+ (if #t x y) 5))))
+        """)
+
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let xParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        let yParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        let xUUID = try XCTUnwrap(xParameters["UUID"] as? String)
+        let yUUID = try XCTUnwrap(yParameters["UUID"] as? String)
+
+        for (index, expectedUUID) in [(4, xUUID), (6, yUUID)] {
+            XCTAssertEqual(actions[index]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.number")
+            let parameters = try XCTUnwrap(actions[index]["WFWorkflowActionParameters"] as? [String: Any])
+            let number = try XCTUnwrap(parameters["WFNumberActionNumber"] as? [String: Any])
+            let numberValue = try XCTUnwrap(number["Value"] as? [String: Any])
+            XCTAssertEqual(numberValue["OutputUUID"] as? String, expectedUUID)
+        }
+
+        let endParameters = try XCTUnwrap(actions[7]["WFWorkflowActionParameters"] as? [String: Any])
+        let endUUID = try XCTUnwrap(endParameters["UUID"] as? String)
+        let mathParameters = try XCTUnwrap(actions[8]["WFWorkflowActionParameters"] as? [String: Any])
+        let mathInput = try XCTUnwrap(mathParameters["WFInput"] as? [String: Any])
+        let mathInputValue = try XCTUnwrap(mathInput["Value"] as? [String: Any])
+        XCTAssertEqual(mathInputValue["OutputName"] as? String, "If Result")
+        XCTAssertEqual(mathInputValue["OutputUUID"] as? String, endUUID)
+    }
+
+    func testIfFormPlacesActionsInsideBranches() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Conditional"
+          (if #t
+              (show-result "yes")
+              (show-result "no")))
+        """)
+
+        XCTAssertEqual(result.actionCount, 6)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.gettext",
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.conditional"
+        ])
+        let startParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(startParameters["WFInput"] as? [String: Any])
+        XCTAssertEqual(input["Type"] as? String, "Variable")
+        XCTAssertNotNil(input["Variable"] as? [String: Any])
+
+        let trueParameters = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let falseParameters = try XCTUnwrap(actions[4]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(textTokenLiteral(trueParameters["Text"]), "yes")
+        XCTAssertEqual(textTokenLiteral(falseParameters["Text"]), "no")
+    }
+
+    func testIfValidatesArityConditionAndBranchTypes() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Broken"
+          (show-result (if #t "yes")))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "if expects 3 arguments, got 2")
+        }
+
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Broken"
+          (show-result (if 1 "yes" "no")))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "if expects a boolean condition")
+        }
+
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Broken"
+          (show-result (if #t "yes" 0)))
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "if branches must have matching types, got text and number"
+            )
+        }
+    }
+
     func testNumericComparisonLowersToShortcutCondition() throws {
         let result = try LongwayCompiler().compile("""
         (shortcut "Comparison"
@@ -535,7 +660,11 @@ final class LongwayCoreTests: XCTestCase {
 
     private func textLiteral(in action: [String: Any]) -> String? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
-        let text = parameters?["WFTextActionText"] as? [String: Any]
+        return textTokenLiteral(parameters?["WFTextActionText"])
+    }
+
+    private func textTokenLiteral(_ token: Any?) -> String? {
+        let text = token as? [String: Any]
         let value = text?["Value"] as? [String: Any]
         return value?["string"] as? String
     }

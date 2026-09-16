@@ -78,6 +78,19 @@ Numeric comparisons accept at least two operands. Variadic comparisons test each
     (show-result (and (> x y) (= (+ y 4) x)))))
 ```
 
+`if` requires a Boolean condition, a consequent, and an alternative. In value position, both branches must have the same type and only the selected branch runs:
+
+```scheme
+(shortcut "Conditional"
+  (let ((score 12))
+    (show-result
+      (if (>= score 10)
+          (+ score 5)
+          (+ score 2)))))
+```
+
+In action position, `if` selects between two action forms, such as `(if enabled (notification "On") (notification "Off"))`.
+
 Supported MVP forms:
 
 | Longway form | Apple Shortcut action |
@@ -87,6 +100,7 @@ Supported MVP forms:
 | `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
 | `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
 | `(= a b …)`, `(< a b …)`, `(<= a b …)`, `(> a b …)`, `(>= a b …)` | Compare adjacent numbers |
+| `(if condition consequent alternative)` | If/Otherwise/End If with lazy branches |
 | `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
 | `(not value)` | Boolean negation |
 | `(notification "message")` | Show Notification |
@@ -118,4 +132,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports lexical string, number, and Boolean bindings; arithmetic, numeric comparison, and logical expressions; and a small set of action calls. Source-level conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.
+Longway currently supports lexical string, number, and Boolean bindings; arithmetic, numeric comparison, logical expressions, typed conditionals; and a small set of action calls. Loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.

@@ -14,6 +14,7 @@
 - `let` is lexically scoped and follows Scheme `let` initializer semantics: initializers see the outer environment, not sibling bindings. Shadowing in nested scopes is allowed; duplicate names in one binding list are errors.
 - `(text ...)` is not a public statement and `(show-result)` without an argument is invalid.
 - Numeric `=`, `<`, `<=`, `>`, and `>=` accept at least two operands and compare each adjacent pair, matching Scheme-style chained comparison semantics.
+- `if` requires a Boolean condition, consequent, and alternative. It can select typed values with matching branch types or select action forms; only the selected branch executes.
 - Preserve source locations in semantic diagnostics.
 
 ## Shortcut lowering invariants
@@ -23,7 +24,8 @@
 - Serialize an action-output text reference as a `WFTextTokenString` containing one object-replacement character and an attachment with `Type`, `OutputName`, and `OutputUUID`.
 - Lower `+`, `-`, `*`, and `/` expressions with at least two operands to explicit `is.workflow.actions.math` actions. Materialize a literal left operand with `is.workflow.actions.number`, chain variadic operations left-to-right, and identify each result as `Calculation Result`.
 - Lower numeric `<`, `<=`, `>`, and `>=` with Shortcut condition codes 0, 1, 2, and 3. Because modern Shortcuts has no numeric equality code, lower `=` as both `>=` and `<=`; chain variadic comparisons through nested short-circuit conditional blocks.
-- Represent Boolean values as typed Text producers containing `#t` or `#f`. Lower `not`, short-circuit `and`, and short-circuit `or` to `is.workflow.actions.conditional` blocks sharing a `GroupingIdentifier`; reference the End If UUID as `If Result`.
+- Represent Boolean values as typed Text producers containing `#t` or `#f`. Lower `not`, short-circuit `and`, short-circuit `or`, and source `if` to `is.workflow.actions.conditional` blocks sharing a `GroupingIdentifier`; typed value conditionals reference the End If UUID as `If Result`.
+- Ensure each value-producing `if` branch ends with an action of the branch type. Pass referenced Text/Boolean values through Text and referenced Number values through Number so Shortcuts gives `If Result` the intended runtime value.
 - Conditional `WFInput` must wrap the `WFTextTokenAttachment` as `{ Type: "Variable", Variable: attachment }`. A bare attachment passes plist validation but imports with an unset If condition.
 - Keep normal shortcuts out of the Share Sheet by emitting empty `WFWorkflowTypes` and disabling shortcut input variables.
 - Signing remains opt-in through Apple's `shortcuts sign` command. Replacing a signed destination must be atomic so a failed replacement does not destroy the existing file.
@@ -41,6 +43,7 @@ swift build -c release
 .build/release/longway check Examples/math.longway
 .build/release/longway check Examples/logic.longway
 .build/release/longway check Examples/comparison.longway
+.build/release/longway check Examples/conditional.longway
 ```
 
 For serialization changes, inspect the emitted unsigned plist and verify UUID references point to the intended producer action. When signing behavior changes, exercise the real Apple signer against an existing destination.

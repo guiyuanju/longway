@@ -72,6 +72,13 @@ public struct LongwayCompiler {
         if formName == "let" {
             return try compileLet(parts: parts, at: expression.location, environment: environment)
         }
+        if formName == "if" {
+            return try compileIfForm(
+                arguments: Array(parts.dropFirst()),
+                at: expression.location,
+                environment: environment
+            )
+        }
         return try compileAction(
             formName,
             arguments: Array(parts.dropFirst()),
@@ -207,6 +214,13 @@ public struct LongwayCompiler {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
             let operands = Array(parts.dropFirst())
+            if operation == "if" {
+                return try compileIfValue(
+                    operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
             if let shortcutOperation = mathOperation(operation) {
                 return try compileMath(
                     operation,
@@ -237,6 +251,46 @@ public struct LongwayCompiler {
         case let .boolean(value):
             return CompiledValue(actions: [], value: .literalBoolean(value))
         }
+    }
+
+    private func compileIfForm(
+        arguments: [Expression],
+        at location: SourceLocation,
+        environment: [String: ActionOutputReference]
+    ) throws -> [[String: Any]] {
+        try requireArgumentCount(3, action: "if", arguments: arguments, at: location)
+        let condition = try compileValue(arguments[0], environment: environment)
+        try requireIfCondition(condition, at: arguments[0].location)
+        let trueActions = try compileForm(arguments[1], environment: environment)
+        let falseActions = try compileForm(arguments[2], environment: environment)
+        return lowerActionConditional(
+            condition: condition,
+            trueActions: trueActions,
+            falseActions: falseActions
+        )
+    }
+
+    private func compileIfValue(
+        _ arguments: [Expression],
+        at location: SourceLocation,
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        try requireArgumentCount(3, action: "if", arguments: arguments, at: location)
+        let condition = try compileValue(arguments[0], environment: environment)
+        try requireIfCondition(condition, at: arguments[0].location)
+        let trueBranch = try compileValue(arguments[1], environment: environment)
+        let falseBranch = try compileValue(arguments[2], environment: environment)
+        guard trueBranch.value.type == falseBranch.value.type else {
+            throw LongwayError(
+                "if branches must have matching types, got \(trueBranch.value.type.name) and \(falseBranch.value.type.name)",
+                at: arguments[2].location
+            )
+        }
+        return lowerConditional(
+            condition: condition,
+            trueBranch: trueBranch,
+            falseBranch: falseBranch
+        )
     }
 
     private func compileMath(
@@ -489,6 +543,56 @@ public struct LongwayCompiler {
         trueBranch: CompiledValue,
         falseBranch: CompiledValue
     ) -> CompiledValue {
+        precondition(trueBranch.value.type == falseBranch.value.type)
+        let resultType = trueBranch.value.type
+        var trueActions = trueBranch.actions
+        _ = emitValue(trueBranch.value, into: &trueActions)
+        var falseActions = falseBranch.actions
+        _ = emitValue(falseBranch.value, into: &falseActions)
+
+        let conditional = lowerShortcutConditionalActions(
+            prefixActions: prefixActions,
+            input: input,
+            conditionParameters: conditionParameters,
+            trueActions: trueActions,
+            falseActions: falseActions
+        )
+        return CompiledValue(
+            actions: conditional.actions,
+            value: .output(ActionOutputReference(
+                type: resultType,
+                name: "If Result",
+                uuid: conditional.resultUUID
+            ))
+        )
+    }
+
+    private func lowerActionConditional(
+        condition: CompiledValue,
+        trueActions: [[String: Any]],
+        falseActions: [[String: Any]]
+    ) -> [[String: Any]] {
+        var actions = condition.actions
+        let conditionOutput = materializeBoolean(condition.value, into: &actions)
+        return lowerShortcutConditionalActions(
+            prefixActions: actions,
+            input: conditionOutput,
+            conditionParameters: [
+                "WFCondition": 4,
+                "WFConditionalActionString": "#t"
+            ],
+            trueActions: trueActions,
+            falseActions: falseActions
+        ).actions
+    }
+
+    private func lowerShortcutConditionalActions(
+        prefixActions: [[String: Any]],
+        input: ActionOutputReference,
+        conditionParameters: [String: Any],
+        trueActions: [[String: Any]],
+        falseActions: [[String: Any]]
+    ) -> (actions: [[String: Any]], resultUUID: String) {
         var actions = prefixActions
         let groupingIdentifier = UUID().uuidString
         var startParameters = conditionParameters
@@ -499,32 +603,28 @@ public struct LongwayCompiler {
             "is.workflow.actions.conditional",
             parameters: startParameters
         ))
-
-        actions.append(contentsOf: trueBranch.actions)
-        _ = emitBoolean(trueBranch.value, into: &actions)
-
+        actions.append(contentsOf: trueActions)
         actions.append(action("is.workflow.actions.conditional", parameters: [
             "GroupingIdentifier": groupingIdentifier,
             "WFControlFlowMode": 1
         ]))
-
-        actions.append(contentsOf: falseBranch.actions)
-        _ = emitBoolean(falseBranch.value, into: &actions)
+        actions.append(contentsOf: falseActions)
 
         let resultUUID = UUID().uuidString
         actions.append(action("is.workflow.actions.conditional", parameters: [
             "GroupingIdentifier": groupingIdentifier,
             "WFControlFlowMode": 2
         ], uuid: resultUUID))
+        return (actions, resultUUID)
+    }
 
-        return CompiledValue(
-            actions: actions,
-            value: .output(ActionOutputReference(
-                type: .boolean,
-                name: "If Result",
-                uuid: resultUUID
-            ))
-        )
+    private func requireIfCondition(
+        _ condition: CompiledValue,
+        at location: SourceLocation
+    ) throws {
+        guard condition.value.type == .boolean else {
+            throw LongwayError("if expects a boolean condition", at: location)
+        }
     }
 
     private func requireBoolean(
@@ -571,6 +671,29 @@ public struct LongwayCompiler {
         }
     }
 
+    private func emitValue(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        switch value {
+        case let .literalString(text):
+            return emitText(textTokenString(text), type: .text, into: &actions)
+        case .literalNumber:
+            return emitNumber(value, into: &actions)
+        case .literalBoolean:
+            return emitBoolean(value, into: &actions)
+        case let .output(output):
+            switch output.type {
+            case .text:
+                return emitText(actionOutputTokenString(output), type: .text, into: &actions)
+            case .number:
+                return emitNumber(value, into: &actions)
+            case .boolean:
+                return emitBoolean(value, into: &actions)
+            }
+        }
+    }
+
     private func emitBoolean(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
@@ -598,17 +721,24 @@ public struct LongwayCompiler {
         return ActionOutputReference(type: type, name: "Text", uuid: uuid)
     }
 
+    private func emitNumber(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        let uuid = UUID().uuidString
+        actions.append(action("is.workflow.actions.number", parameters: [
+            "WFNumberActionNumber": numberParameter(value)
+        ], uuid: uuid))
+        return ActionOutputReference(type: .number, name: "Number", uuid: uuid)
+    }
+
     private func materializeNumber(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
         switch value {
-        case let .literalNumber(number):
-            let uuid = UUID().uuidString
-            actions.append(action("is.workflow.actions.number", parameters: [
-                "WFNumberActionNumber": number
-            ], uuid: uuid))
-            return ActionOutputReference(type: .number, name: "Number", uuid: uuid)
+        case .literalNumber:
+            return emitNumber(value, into: &actions)
 
         case let .output(output):
             precondition(output.type == .number)
@@ -731,10 +861,18 @@ public struct LongwayCompiler {
     }
 }
 
-private enum ValueType {
+private enum ValueType: Equatable {
     case text
     case number
     case boolean
+
+    var name: String {
+        switch self {
+        case .text: "text"
+        case .number: "number"
+        case .boolean: "boolean"
+        }
+    }
 }
 
 private struct ActionOutputReference {

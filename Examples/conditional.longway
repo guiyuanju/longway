@@ -1,0 +1,6 @@
+(shortcut "Conditional"
+  (let ((score 12))
+    (show-result
+      (if (>= score 10)
+          (+ score 5)
+          (+ score 2)))))
