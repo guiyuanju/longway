@@ -209,6 +209,114 @@ final class LongwayCoreTests: XCTestCase {
         }
     }
 
+    func testNumericComparisonLowersToShortcutCondition() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Comparison"
+          (show-result (> 7 5)))
+        """)
+
+        XCTAssertEqual(result.actionCount, 7)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let number = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        let numberUUID = try XCTUnwrap(number["UUID"] as? String)
+        let comparison = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(comparison["WFCondition"] as? Int, 2)
+        XCTAssertEqual(comparison["WFNumberValue"] as? Double, 5)
+
+        let input = try XCTUnwrap(comparison["WFInput"] as? [String: Any])
+        XCTAssertEqual(input["Type"] as? String, "Variable")
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let value = try XCTUnwrap(variable["Value"] as? [String: Any])
+        XCTAssertEqual(value["OutputUUID"] as? String, numberUUID)
+        XCTAssertEqual(value["OutputName"] as? String, "Number")
+    }
+
+    func testComparisonOperatorsUseShortcutConditionCodes() throws {
+        for (sourceOperator, shortcutCondition) in [("<", 0), ("<=", 1), (">", 2), (">=", 3)] {
+            let result = try LongwayCompiler().compile("""
+            (shortcut "Comparison"
+              (show-result (\(sourceOperator) 8 2)))
+            """)
+            let propertyList = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+            )
+            let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+            let parameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+            XCTAssertEqual(parameters["WFCondition"] as? Int, shortcutCondition)
+        }
+    }
+
+    func testComparisonReferencesVariableOperandAndChainsPairs() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Comparison"
+          (let ((x 1) (y 2))
+            (show-result (< x y 3))))
+        """)
+
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let xParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        let yParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        let xUUID = try XCTUnwrap(xParameters["UUID"] as? String)
+        let yUUID = try XCTUnwrap(yParameters["UUID"] as? String)
+
+        let outer = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let outerInput = try XCTUnwrap(outer["WFInput"] as? [String: Any])
+        let outerVariable = try XCTUnwrap(outerInput["Variable"] as? [String: Any])
+        let outerValue = try XCTUnwrap(outerVariable["Value"] as? [String: Any])
+        XCTAssertEqual(outerValue["OutputUUID"] as? String, xUUID)
+        let outerRight = try XCTUnwrap(outer["WFNumberValue"] as? [String: Any])
+        let outerRightValue = try XCTUnwrap(outerRight["Value"] as? [String: Any])
+        XCTAssertEqual(outerRightValue["OutputUUID"] as? String, yUUID)
+
+        let inner = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
+        let innerInput = try XCTUnwrap(inner["WFInput"] as? [String: Any])
+        let innerVariable = try XCTUnwrap(innerInput["Variable"] as? [String: Any])
+        let innerValue = try XCTUnwrap(innerVariable["Value"] as? [String: Any])
+        XCTAssertEqual(innerValue["OutputUUID"] as? String, yUUID)
+        XCTAssertEqual(inner["WFNumberValue"] as? Double, 3)
+    }
+
+    func testNumericEqualityUsesInclusiveBounds() throws {
+        let result = try LongwayCompiler().compile("""
+        (shortcut "Comparison"
+          (show-result (= 4 4)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let startConditions = try actions.compactMap { action -> Int? in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any],
+                  parameters["WFControlFlowMode"] as? Int == 0
+            else { return nil }
+            return try XCTUnwrap(parameters["WFCondition"] as? Int)
+        }
+        XCTAssertEqual(startConditions, [3, 1])
+    }
+
+    func testComparisonsValidateTypesAndArity() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Broken"
+          (show-result (< 1)))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "< expects at least 2 operands, got 1")
+        }
+
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Broken"
+          (show-result (>= 1 "two")))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, ">= expects number operands")
+        }
+    }
+
     func testMathExpressionLowersToNumberCalculateAndShowResult() throws {
         let result = try LongwayCompiler().compile("""
         (shortcut "Math"

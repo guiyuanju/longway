@@ -69,6 +69,15 @@ Logical expressions use `#t` and `#f`. `and` and `or` short-circuit by compiling
     (show-result (and enabled (not #f)))))
 ```
 
+Numeric comparisons accept at least two operands. Variadic comparisons test each adjacent pair, so `(< 1 2 3)` means both `1 < 2` and `2 < 3`:
+
+```scheme
+(shortcut "Comparison"
+  (let ((x 12)
+        (y 8))
+    (show-result (and (> x y) (= (+ y 4) x)))))
+```
+
 Supported MVP forms:
 
 | Longway form | Apple Shortcut action |
@@ -77,13 +86,14 @@ Supported MVP forms:
 | `(let ((name value)) …)` | Materialized Text/Number values plus UUID references |
 | `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
 | `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
+| `(= a b …)`, `(< a b …)`, `(<= a b …)`, `(> a b …)`, `(>= a b …)` | Compare adjacent numbers |
 | `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
 | `(not value)` | Boolean negation |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
 | `(wait 1.5)` | Wait |
 
-Strings support `\n`, `\r`, `\t`, `\"`, and `\\`. Booleans (`#t`, `#f`) are tokenized for future forms but are not used by the MVP actions.
+Strings support `\n`, `\r`, `\t`, `\"`, and `\\`.
 
 ## CLI
 
@@ -108,4 +118,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports lexical string, number, and Boolean bindings; arithmetic and logical expressions; and a small set of action calls. Source-level conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.
+Longway currently supports lexical string, number, and Boolean bindings; arithmetic, numeric comparison, and logical expressions; and a small set of action calls. Source-level conditionals, loops, user-defined functions/macros, Shortcut inputs, richer value types, and a larger action catalog are natural next steps.

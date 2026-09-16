@@ -216,6 +216,14 @@ public struct LongwayCompiler {
                     environment: environment
                 )
             }
+            if comparisonOperators.contains(operation) {
+                return try compileComparison(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
             if operation == "and" || operation == "or" || operation == "not" {
                 return try compileLogical(
                     operation,
@@ -267,6 +275,129 @@ public struct LongwayCompiler {
         }
 
         return CompiledValue(actions: actions, value: .output(result))
+    }
+
+    private func compileComparison(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: [String: ActionOutputReference]
+    ) throws -> CompiledValue {
+        guard operands.count >= 2 else {
+            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+        }
+
+        let first = try compileValue(operands[0], environment: environment)
+        guard first.value.type == .number else {
+            throw LongwayError("\(operation) expects number operands", at: operands[0].location)
+        }
+
+        var actions = first.actions
+        var left = materializeNumber(first.value, into: &actions)
+        var comparisons: [NumericComparison] = []
+
+        for (index, operand) in operands.dropFirst().enumerated() {
+            let compiledOperand = try compileValue(operand, environment: environment)
+            guard compiledOperand.value.type == .number else {
+                throw LongwayError("\(operation) expects number operands", at: operand.location)
+            }
+            actions.append(contentsOf: compiledOperand.actions)
+            comparisons.append(NumericComparison(
+                left: left,
+                right: numberParameter(compiledOperand.value)
+            ))
+
+            if index < operands.count - 2 {
+                left = materializeNumber(compiledOperand.value, into: &actions)
+            }
+        }
+
+        let comparison = lowerComparisonChain(
+            operation,
+            comparisons: comparisons[...]
+        )
+        return CompiledValue(
+            actions: actions + comparison.actions,
+            value: comparison.value
+        )
+    }
+
+    private func lowerComparisonChain(
+        _ operation: String,
+        comparisons: ArraySlice<NumericComparison>
+    ) -> CompiledValue {
+        let comparison = comparisons.first!
+        let falseResult = CompiledValue(actions: [], value: .literalBoolean(false))
+        let trueResult: CompiledValue
+        if comparisons.count == 1 {
+            trueResult = CompiledValue(actions: [], value: .literalBoolean(true))
+        } else {
+            trueResult = lowerComparisonChain(
+                operation,
+                comparisons: comparisons.dropFirst()
+            )
+        }
+        return lowerComparison(
+            operation,
+            comparison: comparison,
+            trueBranch: trueResult,
+            falseBranch: falseResult
+        )
+    }
+
+    private func lowerComparison(
+        _ operation: String,
+        comparison: NumericComparison,
+        trueBranch: CompiledValue,
+        falseBranch: CompiledValue
+    ) -> CompiledValue {
+        if operation == "=" {
+            let atMost = lowerNumericConditional(
+                condition: 1,
+                comparison: comparison,
+                trueBranch: trueBranch,
+                falseBranch: falseBranch
+            )
+            return lowerNumericConditional(
+                condition: 3,
+                comparison: comparison,
+                trueBranch: atMost,
+                falseBranch: falseBranch
+            )
+        }
+
+        let condition: Int
+        switch operation {
+        case "<": condition = 0
+        case "<=": condition = 1
+        case ">": condition = 2
+        case ">=": condition = 3
+        default: preconditionFailure("unknown comparison operation")
+        }
+        return lowerNumericConditional(
+            condition: condition,
+            comparison: comparison,
+            trueBranch: trueBranch,
+            falseBranch: falseBranch
+        )
+    }
+
+    private func lowerNumericConditional(
+        condition: Int,
+        comparison: NumericComparison,
+        trueBranch: CompiledValue,
+        falseBranch: CompiledValue
+    ) -> CompiledValue {
+        lowerShortcutConditional(
+            prefixActions: [],
+            input: comparison.left,
+            conditionParameters: [
+                "WFCondition": condition,
+                "WFNumberValue": comparison.right
+            ],
+            trueBranch: trueBranch,
+            falseBranch: falseBranch
+        )
     }
 
     private func compileLogical(
@@ -339,15 +470,35 @@ public struct LongwayCompiler {
     ) -> CompiledValue {
         var actions = condition.actions
         let conditionOutput = materializeBoolean(condition.value, into: &actions)
-        let groupingIdentifier = UUID().uuidString
+        return lowerShortcutConditional(
+            prefixActions: actions,
+            input: conditionOutput,
+            conditionParameters: [
+                "WFCondition": 4,
+                "WFConditionalActionString": "#t"
+            ],
+            trueBranch: trueBranch,
+            falseBranch: falseBranch
+        )
+    }
 
-        actions.append(action("is.workflow.actions.conditional", parameters: [
-            "GroupingIdentifier": groupingIdentifier,
-            "WFCondition": 4,
-            "WFConditionalActionString": "#t",
-            "WFControlFlowMode": 0,
-            "WFInput": conditionalInput(conditionOutput)
-        ]))
+    private func lowerShortcutConditional(
+        prefixActions: [[String: Any]],
+        input: ActionOutputReference,
+        conditionParameters: [String: Any],
+        trueBranch: CompiledValue,
+        falseBranch: CompiledValue
+    ) -> CompiledValue {
+        var actions = prefixActions
+        let groupingIdentifier = UUID().uuidString
+        var startParameters = conditionParameters
+        startParameters["GroupingIdentifier"] = groupingIdentifier
+        startParameters["WFControlFlowMode"] = 0
+        startParameters["WFInput"] = conditionalInput(input)
+        actions.append(action(
+            "is.workflow.actions.conditional",
+            parameters: startParameters
+        ))
 
         actions.append(contentsOf: trueBranch.actions)
         _ = emitBoolean(trueBranch.value, into: &actions)
@@ -479,6 +630,10 @@ public struct LongwayCompiler {
         }
     }
 
+    private var comparisonOperators: Set<String> {
+        ["=", "<", "<=", ">", ">="]
+    }
+
     private func mathOperation(_ symbol: String) -> String? {
         switch symbol {
         case "+": "+"
@@ -586,6 +741,11 @@ private struct ActionOutputReference {
     let type: ValueType
     let name: String
     let uuid: String
+}
+
+private struct NumericComparison {
+    let left: ActionOutputReference
+    let right: Any
 }
 
 private struct CompiledValue {
