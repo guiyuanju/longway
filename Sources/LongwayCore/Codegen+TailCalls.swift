@@ -111,7 +111,7 @@ extension FunctionCompiler {
                 type: parameter.type,
                 name: parameter.name,
                 uuid: uuid,
-                isRuntimeTyped: true
+                isRuntimeTyped: false
             )
         }
 
@@ -147,7 +147,7 @@ extension FunctionCompiler {
                 type: signature.returnType,
                 name: "Result",
                 uuid: resultUUID,
-                isRuntimeTyped: true
+                isRuntimeTyped: false
             ))
         )
     }

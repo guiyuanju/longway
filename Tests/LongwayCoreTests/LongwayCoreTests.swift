@@ -140,6 +140,41 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertTrue(setVariableNames.contains("#result"))
     }
 
+    func testLoopVariableReadsAreMaterializedBeforeUseInAConditional() throws {
+        // A named-variable Get Variable read is runtime-generic to the Shortcuts
+        // editor, exactly like dictionary extraction: skip materializing it and the
+        // editor can't infer the condition's input type, rendering "is anything"
+        // instead of "is 0" even though the comparison still targets the right value.
+        let result = try LongwayCompiler().compile("""
+        (define (sum-to n acc)
+          (if (= n 0)
+              acc
+              (sum-to (- n 1) (+ acc n))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let comparison = try XCTUnwrap(actions.first {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFNumberValue"] as? Int == 0
+        })
+        let parameters = try XCTUnwrap(comparison["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let attachment = try XCTUnwrap(variable["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputName"] as? String, "Number")
+
+        let attachmentUUID = try XCTUnwrap(attachment["OutputUUID"] as? String)
+        let producer = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == attachmentUUID
+        })
+        XCTAssertEqual(producer["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.number")
+    }
+
     func testNonTailSelfRecursionStillCallsItsStandaloneShortcut() throws {
         let result = try LongwayCompiler().compile("""
         (define (count-up n)
