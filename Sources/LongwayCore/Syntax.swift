@@ -36,3 +36,10 @@ struct Expression: Equatable {
         case boolean(Bool)
     }
 }
+
+extension Expression {
+    var symbol: String? {
+        guard case let .symbol(value) = self.value else { return nil }
+        return value
+    }
+}
