@@ -111,11 +111,16 @@ struct FunctionCompiler {
             )
         }
 
-        let environment = CompileEnvironment(variables: variables)
-        for form in definition.body.dropLast() {
-            actions.append(contentsOf: try compileForm(form, environment: environment))
+        let result: CompiledValue
+        if isTailRecursive(definition) {
+            result = try compileTailRecursiveLoop(definition, signature: signature, parameterOutputs: variables)
+        } else {
+            let environment = CompileEnvironment(variables: variables)
+            for form in definition.body.dropLast() {
+                actions.append(contentsOf: try compileForm(form, environment: environment))
+            }
+            result = try compileResultForm(definition.body.last!, environment: environment)
         }
-        let result = try compileResultForm(definition.body.last!, environment: environment)
         actions.append(contentsOf: result.actions)
         let output = outputParameter(result.value, actions: &actions)
         actions.append(ShortcutPlist.action("is.workflow.actions.output", parameters: [

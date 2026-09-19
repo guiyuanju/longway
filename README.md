@@ -96,7 +96,9 @@ Direct and mutual recursion are supported. Recursive calls run the generated Sho
   (sum-to 10 0))
 ```
 
-`if`, `and`, and `or` keep non-selected expressions inside Shortcut conditional branches, preserving lazy and short-circuit behavior. Recursion is not tail-call optimized and consumes Shortcut runtime depth.
+`if`, `and`, and `or` keep non-selected expressions inside Shortcut conditional branches, preserving lazy and short-circuit behavior.
+
+A function whose entire body is a single direct self-call in tail position — like `sum-to` above, where every branch of the closing `if` either returns a plain value or calls `sum-to` again with no further work — compiles to a bounded loop inside the same Shortcut instead of a recursive Shortcut call, so it no longer consumes Shortcut runtime call-stack depth. The loop runs a fixed number of iterations (currently 2000, since Shortcuts has no native way to end a loop early once a base case is reached); recursion that needs more steps than that returns whatever the accumulator held at the bound rather than the fully reduced result. Mutual recursion (like `even`/`odd` calling each other), non-tail recursion (a self-call used inside another expression, e.g. `(+ 1 (count-up (- n 1)))`), and any function whose body has more than one form or performs a `notification`/`open-url`/`wait`/`show-result` on the path to its self-call are not loop-optimized — they keep calling the generated Shortcut recursively and are still bounded by Shortcut runtime call-stack depth.
 
 ## Expressions and actions
 
@@ -153,4 +155,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization, higher-order functions, macros, richer value types, and a larger action catalog remain future work.
+Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, richer value types, and a larger action catalog remain future work.

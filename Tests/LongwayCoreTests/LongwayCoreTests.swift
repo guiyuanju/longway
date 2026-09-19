@@ -104,7 +104,7 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(actions.last?["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.output")
     }
 
-    func testRecursiveFunctionCallsItsStandaloneShortcut() throws {
+    func testSelfTailRecursiveFunctionCompilesToABoundedLoopNotRunWorkflow() throws {
         let result = try LongwayCompiler().compile("""
         (define (sum-to n acc)
           (if (= n 0)
@@ -119,14 +119,78 @@ final class LongwayCoreTests: XCTestCase {
             ["WFNumberContentItem"]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.runworkflow"))
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.dictionary"))
+
+        let repeatStart = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count"
+        })
+        let repeatParameters = try XCTUnwrap(repeatStart["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(repeatParameters["WFRepeatCount"] as? Int, tailCallLoopLimit)
+
+        let setVariableNames = actions.compactMap { action -> String? in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            else { return nil }
+            return parameters["WFVariableName"] as? String
+        }
+        XCTAssertTrue(setVariableNames.contains("n"))
+        XCTAssertTrue(setVariableNames.contains("acc"))
+        XCTAssertTrue(setVariableNames.contains("#result"))
+    }
+
+    func testNonTailSelfRecursionStillCallsItsStandaloneShortcut() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (count-up n)
+          (if (= n 0)
+              0
+              (+ 1 (count-up (- n 1)))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
         let recursiveRun = try XCTUnwrap(actions.first { action in
             guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow",
                   let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
             else { return false }
-            return parameters["WFWorkflowName"] as? String == "sum-to"
+            return parameters["WFWorkflowName"] as? String == "count-up"
         })
         let runParameters = try XCTUnwrap(recursiveRun["WFWorkflowActionParameters"] as? [String: Any])
-        XCTAssertEqual(runParameters["CustomOutputName"] as? String, "sum-to Result")
+        XCTAssertEqual(runParameters["CustomOutputName"] as? String, "count-up Result")
+    }
+
+    func testTailRecursionWithShowResultFallsBackToRunWorkflow() throws {
+        // show-result may only appear as a function's (or let's) literal tail form,
+        // never nested inside an if branch, so this is the only way a self-tail-call
+        // can coexist with show-result at all.
+        let result = try LongwayCompiler().compile("""
+        (define (count-down n)
+          (show-result (count-down (- n 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertTrue(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow" })
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
+    }
+
+    func testTailRecursionWithLeadingSideEffectFallsBackToRunWorkflow() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (count-down n)
+          (notification "tick")
+          (if (= n 0)
+              0
+              (count-down (- n 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertTrue(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow" })
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
     }
 
     func testMutuallyRecursiveFunctionsCompile() throws {

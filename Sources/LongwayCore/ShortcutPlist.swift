@@ -46,6 +46,13 @@ enum ShortcutPlist {
         ]
     }
 
+    static func namedVariableAttachment(name: String) -> [String: Any] {
+        [
+            "Value": ["VariableName": name, "Type": "Variable"],
+            "WFSerializationType": "WFTextTokenAttachment"
+        ]
+    }
+
     static func shortcutInputAttachment() -> [String: Any] {
         [
             "Value": ["Type": "ExtensionInput"],
