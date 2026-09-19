@@ -140,6 +140,31 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertTrue(setVariableNames.contains("#result"))
     }
 
+    func testBaseCaseExitsImmediatelyInsteadOfIdlingToTheLoopBound() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (sum-to n acc)
+          (if (= n 0)
+              acc
+              (sum-to (- n 1) (+ acc n))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.map { $0["WFWorkflowActionIdentifier"] as? String }
+
+        let resultAssignmentIndex = try XCTUnwrap(actions.firstIndex {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFVariableName"] as? String == "#result"
+        })
+        // The base case must exit right after recording its value, before the
+        // Otherwise branch (WFControlFlowMode 1) that starts the recursive step.
+        XCTAssertEqual(identifiers[resultAssignmentIndex + 1], "is.workflow.actions.exit")
+        XCTAssertEqual(identifiers.filter { $0 == "is.workflow.actions.exit" }.count, 1)
+    }
+
     func testLoopVariableReadsAreMaterializedBeforeUseInAConditional() throws {
         // A named-variable Get Variable read is runtime-generic to the Shortcuts
         // editor, exactly like dictionary extraction: skip materializing it and the
