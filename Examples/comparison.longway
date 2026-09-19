@@ -1,4 +1,4 @@
-(shortcut "Comparison"
+(define (comparison)
   (let ((x 12)
         (y 8))
     (show-result (and (> x y) (= (+ y 4) x)))))

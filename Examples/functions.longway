@@ -1,0 +1,7 @@
+(define (sum-to n acc)
+  (if (= n 0)
+      acc
+      (sum-to (- n 1) (+ acc n))))
+
+(define (sum-to-ten)
+  (show-result (sum-to 10 0)))

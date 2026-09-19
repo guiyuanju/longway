@@ -1,4 +1,4 @@
-(shortcut "Conditional"
+(define (conditional)
   (let ((score 12))
     (show-result
       (if (>= score 10)

@@ -81,17 +81,37 @@ struct LongwayCommand {
         }
 
         let inputURL = URL(fileURLWithPath: inputPath)
-        let destination = outputPath.map { URL(fileURLWithPath: $0) }
-            ?? inputURL.deletingPathExtension().appendingPathExtension("shortcut")
+        let destination = outputPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? inputURL.deletingPathExtension().appendingPathExtension("shortcuts")
         let compiled = try compileFile(inputURL, format: format)
-
-        if let signingMode {
-            try sign(compiled.data, to: destination, mode: signingMode)
-            print("Built and signed \(destination.path) (\(compiled.actionCount) Shortcut actions)")
-        } else {
-            try compiled.data.write(to: destination, options: .atomic)
-            print("Built \(destination.path) (\(compiled.actionCount) Shortcut actions, unsigned)")
+        let artifacts = try compiled.shortcuts.map { shortcut in
+            let data = try signingMode.map { try sign(shortcut.data, mode: $0) } ?? shortcut.data
+            return (shortcut, data)
         }
+
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw CLIError("output path must be a directory")
+            }
+        } else {
+            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        }
+
+        for (shortcut, data) in artifacts {
+            let outputURL = destination
+                .appendingPathComponent(shortcut.name)
+                .appendingPathExtension("shortcut")
+            try data.write(to: outputURL, options: .atomic)
+        }
+        let actionCount = compiled.shortcuts.reduce(0) { $0 + $1.actionCount }
+        let signingDescription = signingMode == nil ? "unsigned" : "signed"
+        let noun = compiled.shortcuts.count == 1 ? "function Shortcut" : "function Shortcuts"
+        print(
+            "Built \(compiled.shortcuts.count) \(signingDescription) \(noun) in " +
+            "\(destination.path) (\(actionCount) Shortcut actions)"
+        )
     }
 
     private static func check(_ arguments: [String]) throws {
@@ -99,13 +119,16 @@ struct LongwayCommand {
             throw CLIError("usage: longway check <file.longway>")
         }
         let compiled = try compileFile(URL(fileURLWithPath: arguments[0]), format: .binary)
-        print("OK: \(compiled.name) (\(compiled.actionCount) Shortcut actions)")
+        let actionCount = compiled.shortcuts.reduce(0) { $0 + $1.actionCount }
+        let names = compiled.shortcuts.map(\.name).joined(separator: ", ")
+        let noun = compiled.shortcuts.count == 1 ? "function" : "functions"
+        print("OK: \(compiled.shortcuts.count) \(noun) [\(names)] (\(actionCount) Shortcut actions)")
     }
 
     private static func compileFile(
         _ inputURL: URL,
         format: PropertyListSerialization.PropertyListFormat
-    ) throws -> CompiledShortcut {
+    ) throws -> CompiledProgram {
         let source: String
         do {
             source = try String(contentsOf: inputURL, encoding: .utf8)
@@ -114,13 +137,13 @@ struct LongwayCommand {
         }
 
         do {
-            return try LongwayCompiler().compile(source, format: format)
+            return try LongwayCompiler().compileProgram(source, format: format)
         } catch let error as LongwayError {
             throw CLIError("\(inputURL.path):\(error.description)")
         }
     }
 
-    private static func sign(_ data: Data, to destination: URL, mode: String) throws {
+    private static func sign(_ data: Data, mode: String) throws -> Data {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("longway-\(UUID().uuidString)", isDirectory: true)
@@ -156,8 +179,7 @@ struct LongwayCommand {
             throw CLIError("signing failed\(detail.map { ": \($0)" } ?? ""). Try building without --sign.")
         }
 
-        let signedData = try Data(contentsOf: signedURL)
-        try signedData.write(to: destination, options: .atomic)
+        return try Data(contentsOf: signedURL)
     }
 
     private static func printHelp() {
@@ -165,13 +187,13 @@ struct LongwayCommand {
         Longway — write Apple Shortcuts with Scheme-like syntax
 
         Usage:
-          longway build <file.longway> [-o output.shortcut] [--xml]
+          longway build <file.longway> [-o output-directory] [--xml]
                         [--sign[=anyone|people-who-know-me]]
           longway check <file.longway>
           longway version
 
-        Build creates an unsigned binary .shortcut by default. Use --sign to call
-        Apple's `shortcuts sign` command and create an importable shared file.
+        Build creates one unsigned .shortcut per function in a .shortcuts directory.
+        Use --sign to call Apple's `shortcuts sign` command for every artifact.
         """)
     }
 

@@ -6,16 +6,16 @@ struct Parser {
         self.tokens = tokens
     }
 
-    mutating func parseProgram() throws -> Expression {
+    mutating func parseProgram() throws -> [Expression] {
         guard current.kind != .eof else {
-            throw LongwayError("expected a shortcut declaration", at: current.location)
+            throw LongwayError("expected at least one function definition", at: current.location)
         }
 
-        let expression = try parseExpression()
-        guard current.kind == .eof else {
-            throw LongwayError("only one top-level expression is allowed", at: current.location)
+        var expressions: [Expression] = []
+        while current.kind != .eof {
+            expressions.append(try parseExpression())
         }
-        return expression
+        return expressions
     }
 
     private var current: Token {

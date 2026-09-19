@@ -3,20 +3,238 @@ import XCTest
 @testable import LongwayCore
 
 final class LongwayCoreTests: XCTestCase {
+    func testProgramCompilesEachDefinitionIntoStandaloneShortcut() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (add x y)
+          (+ x y))
+
+        (define (main)
+          (add 20 22))
+        """)
+
+        XCTAssertEqual(program.shortcuts.map(\.name), ["add", "main"])
+        let addPropertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: program.shortcuts[0].data,
+                format: nil
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(addPropertyList["WFWorkflowHasShortcutInputVariables"] as? Bool, true)
+        XCTAssertEqual(
+            addPropertyList["WFWorkflowInputContentItemClasses"] as? [String],
+            ["WFDictionaryContentItem"]
+        )
+        XCTAssertEqual(
+            addPropertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFNumberContentItem"]
+        )
+
+        let mainPropertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: program.shortcuts[1].data,
+                format: nil
+            ) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(mainPropertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.dictionary",
+            "is.workflow.actions.runworkflow",
+            "is.workflow.actions.output"
+        ])
+        let dictionaryParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        let dictionaryUUID = try XCTUnwrap(dictionaryParameters["UUID"] as? String)
+        let fields = try XCTUnwrap(dictionaryParameters["WFItems"] as? [String: Any])
+        let fieldValue = try XCTUnwrap(fields["Value"] as? [String: Any])
+        let items = try XCTUnwrap(fieldValue["WFDictionaryFieldValueItems"] as? [[String: Any]])
+        XCTAssertEqual(items.compactMap { textTokenLiteral($0["WFKey"]) }, ["x", "y"])
+
+        let runParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(runParameters["WFWorkflowName"] as? String, "add")
+        let runInput = try XCTUnwrap(runParameters["WFInput"] as? [String: Any])
+        let runInputValue = try XCTUnwrap(runInput["Value"] as? [String: Any])
+        XCTAssertEqual(runInputValue["OutputUUID"] as? String, dictionaryUUID)
+    }
+
+    func testFunctionCallsValidateTargetArityAndSingleResultAPI() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (main) (missing 1))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "unknown value form 'missing'")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compileProgram("""
+        (define (identity value) value)
+        (define (main) (identity 1 2))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "identity expects 1 argument, got 2")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (one) "one")
+        (define (two) "two")
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "source defines 2 functions; use compileProgram to compile all functions"
+            )
+        }
+    }
+
+    func testFunctionParametersReadNamedValuesFromShortcutInput() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (add x y)
+          (+ x y))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        for (index, name) in ["x", "y"].enumerated() {
+            XCTAssertEqual(
+                actions[index]["WFWorkflowActionIdentifier"] as? String,
+                "is.workflow.actions.getvalueforkey"
+            )
+            let parameters = try XCTUnwrap(actions[index]["WFWorkflowActionParameters"] as? [String: Any])
+            XCTAssertEqual(parameters["CustomOutputName"] as? String, name)
+            XCTAssertEqual(parameters["WFDictionaryKey"] as? String, name)
+            XCTAssertEqual(parameters["WFGetDictionaryValueType"] as? String, "Value")
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+            XCTAssertEqual(inputValue["Type"] as? String, "ExtensionInput")
+        }
+        XCTAssertEqual(actions.last?["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.output")
+    }
+
+    func testRecursiveFunctionCallsItsStandaloneShortcut() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (sum-to n acc)
+          (if (= n 0)
+              acc
+              (sum-to (- n 1) (+ acc n))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFNumberContentItem"]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let recursiveRun = try XCTUnwrap(actions.first { action in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFWorkflowName"] as? String == "sum-to"
+        })
+        let runParameters = try XCTUnwrap(recursiveRun["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(runParameters["CustomOutputName"] as? String, "sum-to Result")
+    }
+
+    func testMutuallyRecursiveFunctionsCompile() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (even n)
+          (if (= n 0) #t (odd (- n 1))))
+
+        (define (odd n)
+          (if (= n 0) #f (even (- n 1))))
+        """)
+
+        XCTAssertEqual(program.shortcuts.map(\.name), ["even", "odd"])
+        for (shortcut, target) in zip(program.shortcuts, ["odd", "even"]) {
+            let propertyList = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: shortcut.data, format: nil) as? [String: Any]
+            )
+            let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+            XCTAssertTrue(actions.contains { action in
+                guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow",
+                      let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+                else { return false }
+                return parameters["WFWorkflowName"] as? String == target
+            })
+        }
+    }
+
+    func testUnconstrainedFunctionRemainsGenericAcrossCallTypes() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (identity value) value)
+        (define (number-main) (+ (identity 1) 2))
+        (define (text-main) (identity "hello"))
+        """)
+
+        let identity = try XCTUnwrap(program.shortcuts.first { $0.name == "identity" })
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: identity.data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFStringContentItem", "WFNumberContentItem", "WFGenericFileContentItem"]
+        )
+    }
+
+    func testInferredFunctionTypesRejectKnownBadCalls() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compileProgram("""
+        (define (double value) (+ value value))
+        (define (main) (double "wrong"))
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "double argument 1 has incompatible type"
+            )
+        }
+    }
+
+    func testDefinitionsValidateNamesAndLegacyShortcutSyntax() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compileProgram("")) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "expected at least one function definition"
+            )
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (shortcut "Legacy" (show-result "no"))
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "top-level forms must be function definitions"
+            )
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (same value value) value)
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "duplicate function parameter 'value'"
+            )
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (+ value) value)
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name '+' is reserved")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compileProgram("""
+        (define (helper) "one")
+        (define (Helper) "two")
+        """)) { error in
+            XCTAssertEqual(
+                (error as? LongwayError)?.message,
+                "function name 'Helper' conflicts with 'helper' on case-insensitive file systems"
+            )
+        }
+    }
+
     func testShowResultEmbedsStringLiteralDirectly() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Hello Longway"
+        (define (test)
           (show-result "Hello from Longway!"))
         """)
 
-        XCTAssertEqual(result.name, "Hello Longway")
-        XCTAssertEqual(result.actionCount, 1)
+        XCTAssertEqual(result.name, "test")
+        XCTAssertEqual(result.actionCount, 2)
 
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
-        XCTAssertEqual(actions.count, 1)
+        XCTAssertEqual(actions.count, 2)
         XCTAssertEqual(actions[0]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.showresult")
         XCTAssertEqual(propertyList["WFWorkflowTypes"] as? [String], [])
         XCTAssertEqual(propertyList["WFWorkflowHasShortcutInputVariables"] as? Bool, false)
@@ -31,12 +249,12 @@ final class LongwayCoreTests: XCTestCase {
 
     func testLetMaterializesTextAndShowResultReferencesItsUUID() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Hello Longway"
+        (define (test)
           (let ((content "Hello from Longway!"))
             (show-result content)))
         """)
 
-        XCTAssertEqual(result.actionCount, 2)
+        XCTAssertEqual(result.actionCount, 3)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -59,11 +277,11 @@ final class LongwayCoreTests: XCTestCase {
 
     func testShowResultEmbedsBooleanLiteralDirectly() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Boolean"
+        (define (test)
           (show-result #t))
         """)
 
-        XCTAssertEqual(result.actionCount, 1)
+        XCTAssertEqual(result.actionCount, 2)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -76,12 +294,12 @@ final class LongwayCoreTests: XCTestCase {
 
     func testBooleanLetBindingMaterializesTextVariable() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Boolean"
+        (define (test)
           (let ((enabled #t))
             (show-result enabled)))
         """)
 
-        XCTAssertEqual(result.actionCount, 2)
+        XCTAssertEqual(result.actionCount, 3)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -103,11 +321,11 @@ final class LongwayCoreTests: XCTestCase {
 
     func testNotLowersToIfOtherwiseEndIfAndReferencesIfResult() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Boolean"
+        (define (test)
           (show-result (not #t)))
         """)
 
-        XCTAssertEqual(result.actionCount, 7)
+        XCTAssertEqual(result.actionCount, 8)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -119,7 +337,8 @@ final class LongwayCoreTests: XCTestCase {
             "is.workflow.actions.conditional",
             "is.workflow.actions.gettext",
             "is.workflow.actions.conditional",
-            "is.workflow.actions.showresult"
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.output"
         ])
 
         let inputText = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
@@ -158,7 +377,7 @@ final class LongwayCoreTests: XCTestCase {
     func testAndAndOrPlaceRemainingOperandInShortCircuitBranch() throws {
         for operation in ["and", "or"] {
             let result = try LongwayCompiler().compile("""
-            (shortcut "Boolean"
+            (define (test)
               (show-result (\(operation) #t (not #f))))
             """)
             let propertyList = try XCTUnwrap(
@@ -188,21 +407,21 @@ final class LongwayCoreTests: XCTestCase {
 
     func testLogicalOperatorsValidateTypesAndArity() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (and #t 1)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "and expects boolean operands")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (or #t)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "or expects at least 2 operands, got 1")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (not #t #f)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "not expects 1 operand, got 2")
@@ -211,11 +430,11 @@ final class LongwayCoreTests: XCTestCase {
 
     func testIfValueLowersToTypedShortcutResult() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Conditional"
+        (define (test)
           (show-result (if #t "yes" "no")))
         """)
 
-        XCTAssertEqual(result.actionCount, 7)
+        XCTAssertEqual(result.actionCount, 8)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -227,7 +446,8 @@ final class LongwayCoreTests: XCTestCase {
             "is.workflow.actions.conditional",
             "is.workflow.actions.gettext",
             "is.workflow.actions.conditional",
-            "is.workflow.actions.showresult"
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.output"
         ])
         XCTAssertEqual(textLiteral(in: actions[2]), "yes")
         XCTAssertEqual(textLiteral(in: actions[4]), "no")
@@ -245,7 +465,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testIfNumberResultCanFeedArithmetic() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Conditional"
+        (define (test)
           (let ((x 10) (y 20))
             (show-result (+ (if #t x y) 5))))
         """)
@@ -278,13 +498,14 @@ final class LongwayCoreTests: XCTestCase {
 
     func testIfFormPlacesActionsInsideBranches() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Conditional"
+        (define (test)
           (if #t
               (show-result "yes")
-              (show-result "no")))
+              (show-result "no"))
+          #t)
         """)
 
-        XCTAssertEqual(result.actionCount, 6)
+        XCTAssertEqual(result.actionCount, 7)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -295,7 +516,8 @@ final class LongwayCoreTests: XCTestCase {
             "is.workflow.actions.showresult",
             "is.workflow.actions.conditional",
             "is.workflow.actions.showresult",
-            "is.workflow.actions.conditional"
+            "is.workflow.actions.conditional",
+            "is.workflow.actions.output"
         ])
         let startParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
         let input = try XCTUnwrap(startParameters["WFInput"] as? [String: Any])
@@ -310,37 +532,73 @@ final class LongwayCoreTests: XCTestCase {
 
     func testIfValidatesArityConditionAndBranchTypes() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (if #t "yes")))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "if expects 3 arguments, got 2")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (if 1 "yes" "no")))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "if expects a boolean condition")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (if #t "yes" 0)))
         """)) { error in
             XCTAssertEqual(
                 (error as? LongwayError)?.message,
-                "if branches must have matching types, got text and number"
+                "if branches must have matching types"
             )
         }
     }
 
+    func testNumericEqualityUsesDirectIsConditionWithTypedInputAndLiteralZero() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (test n)
+          (= n 0))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let comparisons = actions.filter { action in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFControlFlowMode"] as? Int == 0
+        }
+        let comparison = try XCTUnwrap(comparisons.first)
+        XCTAssertEqual(comparisons.count, 1)
+
+        let parameters = try XCTUnwrap(comparison["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(parameters["WFCondition"] as? Int, 4)
+        XCTAssertEqual(parameters["WFNumberValue"] as? Double, 0)
+        XCTAssertNil(parameters["WFConditionalActionString"])
+
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let inputVariable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let inputValue = try XCTUnwrap(inputVariable["Value"] as? [String: Any])
+        let inputUUID = try XCTUnwrap(inputValue["OutputUUID"] as? String)
+        let inputProducer = try XCTUnwrap(actions.first { action in
+            (action["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == inputUUID
+        })
+        XCTAssertEqual(
+            inputProducer["WFWorkflowActionIdentifier"] as? String,
+            "is.workflow.actions.number"
+        )
+    }
+
     func testNumericComparisonLowersToShortcutCondition() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Comparison"
+        (define (test)
           (show-result (> 7 5)))
         """)
 
-        XCTAssertEqual(result.actionCount, 7)
+        XCTAssertEqual(result.actionCount, 8)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -362,7 +620,7 @@ final class LongwayCoreTests: XCTestCase {
     func testComparisonOperatorsUseShortcutConditionCodes() throws {
         for (sourceOperator, shortcutCondition) in [("<", 0), ("<=", 1), (">", 2), (">=", 3)] {
             let result = try LongwayCompiler().compile("""
-            (shortcut "Comparison"
+            (define (test)
               (show-result (\(sourceOperator) 8 2)))
             """)
             let propertyList = try XCTUnwrap(
@@ -376,7 +634,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testComparisonReferencesVariableOperandAndChainsPairs() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Comparison"
+        (define (test)
           (let ((x 1) (y 2))
             (show-result (< x y 3))))
         """)
@@ -395,9 +653,15 @@ final class LongwayCoreTests: XCTestCase {
         let outerVariable = try XCTUnwrap(outerInput["Variable"] as? [String: Any])
         let outerValue = try XCTUnwrap(outerVariable["Value"] as? [String: Any])
         XCTAssertEqual(outerValue["OutputUUID"] as? String, xUUID)
-        let outerRight = try XCTUnwrap(outer["WFNumberValue"] as? [String: Any])
+        let outerRight = try XCTUnwrap(outer["WFConditionalActionString"] as? [String: Any])
         let outerRightValue = try XCTUnwrap(outerRight["Value"] as? [String: Any])
-        XCTAssertEqual(outerRightValue["OutputUUID"] as? String, yUUID)
+        let outerRightAttachments = try XCTUnwrap(
+            outerRightValue["attachmentsByRange"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            (outerRightAttachments["{0, 1}"] as? [String: Any])?["OutputUUID"] as? String,
+            yUUID
+        )
 
         let inner = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
         let innerInput = try XCTUnwrap(inner["WFInput"] as? [String: Any])
@@ -407,9 +671,9 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(inner["WFNumberValue"] as? Double, 3)
     }
 
-    func testNumericEqualityUsesInclusiveBounds() throws {
+    func testNumericEqualityUsesShortcutIsCondition() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Comparison"
+        (define (test)
           (show-result (= 4 4)))
         """)
         let propertyList = try XCTUnwrap(
@@ -423,19 +687,19 @@ final class LongwayCoreTests: XCTestCase {
             else { return nil }
             return try XCTUnwrap(parameters["WFCondition"] as? Int)
         }
-        XCTAssertEqual(startConditions, [3, 1])
+        XCTAssertEqual(startConditions, [4])
     }
 
     func testComparisonsValidateTypesAndArity() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (< 1)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "< expects at least 2 operands, got 1")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (>= 1 "two")))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, ">= expects number operands")
@@ -444,11 +708,11 @@ final class LongwayCoreTests: XCTestCase {
 
     func testMathExpressionLowersToNumberCalculateAndShowResult() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Math"
+        (define (test)
           (show-result (+ 7 5)))
         """)
 
-        XCTAssertEqual(result.actionCount, 3)
+        XCTAssertEqual(result.actionCount, 4)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -456,7 +720,8 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
             "is.workflow.actions.number",
             "is.workflow.actions.math",
-            "is.workflow.actions.showresult"
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.output"
         ])
 
         let numberParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
@@ -485,7 +750,7 @@ final class LongwayCoreTests: XCTestCase {
     func testMathOperatorsUseShortcutOperationSymbols() throws {
         for (sourceOperator, shortcutOperator) in [("+", "+"), ("-", "-"), ("*", "×"), ("/", "÷")] {
             let result = try LongwayCompiler().compile("""
-            (shortcut "Math"
+            (define (test)
               (show-result (\(sourceOperator) 8 2)))
             """)
             let propertyList = try XCTUnwrap(
@@ -499,14 +764,14 @@ final class LongwayCoreTests: XCTestCase {
 
     func testVariadicMathChainsResultsLeftToRight() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Math"
+        (define (test)
           (show-result (- 20 3 2)))
         """)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
-        XCTAssertEqual(result.actionCount, 4)
+        XCTAssertEqual(result.actionCount, 5)
 
         let firstMath = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
         let firstMathUUID = try XCTUnwrap(firstMath["UUID"] as? String)
@@ -519,12 +784,12 @@ final class LongwayCoreTests: XCTestCase {
 
     func testNumericLetBindingsAndNestedMathUseActionOutputs() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Math"
+        (define (test)
           (let ((x 10) (y 4))
             (show-result (* (+ x y) 2))))
         """)
 
-        XCTAssertEqual(result.actionCount, 5)
+        XCTAssertEqual(result.actionCount, 6)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -534,7 +799,8 @@ final class LongwayCoreTests: XCTestCase {
             "is.workflow.actions.number",
             "is.workflow.actions.math",
             "is.workflow.actions.math",
-            "is.workflow.actions.showresult"
+            "is.workflow.actions.showresult",
+            "is.workflow.actions.output"
         ])
 
         let yParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
@@ -547,14 +813,14 @@ final class LongwayCoreTests: XCTestCase {
 
     func testMathRejectsTextOperandsAndTooFewOperands() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (+ "one" 2)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "+ expects number operands")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result (* 2)))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "* expects at least 2 operands, got 1")
@@ -563,7 +829,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testShowResultEmbedsNumberLiteralDirectly() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Number"
+        (define (test)
           (show-result 42))
         """)
         let propertyList = try XCTUnwrap(
@@ -578,11 +844,12 @@ final class LongwayCoreTests: XCTestCase {
 
     func testOpenURLExpandsToURLAndOpenActions() throws {
         let result = try LongwayCompiler().compile("""
-        (shortcut "Website"
-          (open-url "https://example.com"))
+        (define (test)
+          (open-url "https://example.com")
+          "done")
         """)
 
-        XCTAssertEqual(result.actionCount, 2)
+        XCTAssertEqual(result.actionCount, 3)
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
@@ -593,7 +860,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testLetRejectsUnknownVariable() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result missing))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "unknown variable 'missing'")
@@ -602,7 +869,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testLetRejectsDuplicateBindings() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (let ((content "one") (content "two"))
             (show-result content)))
         """)) { error in
@@ -612,7 +879,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testLetInitializersUseOuterScope() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (let ((first "one") (second first))
             (show-result second)))
         """)) { error in
@@ -622,7 +889,7 @@ final class LongwayCoreTests: XCTestCase {
 
     func testShowResultRequiresOneArgument() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
+        (define (test)
           (show-result))
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "show-result expects 1 argument, got 0")
@@ -631,8 +898,9 @@ final class LongwayCoreTests: XCTestCase {
 
     func testReportsSourceLocationForUnknownAction() throws {
         XCTAssertThrowsError(try LongwayCompiler().compile("""
-        (shortcut "Broken"
-          (teleport "home"))
+        (define (test)
+          (teleport "home")
+          "done")
         """)) { error in
             guard let error = error as? LongwayError else {
                 return XCTFail("Expected LongwayError, got \(error)")
@@ -643,8 +911,8 @@ final class LongwayCoreTests: XCTestCase {
     }
 
     func testRejectsTrailingTopLevelExpression() throws {
-        XCTAssertThrowsError(try LongwayCompiler().compile("(shortcut \"One\" (text \"1\")) (text \"2\")")) { error in
-            XCTAssertTrue(String(describing: error).contains("only one top-level expression"))
+        XCTAssertThrowsError(try LongwayCompiler().compile("(define (one) \"1\") (text \"2\")")) { error in
+            XCTAssertTrue(String(describing: error).contains("top-level forms must be function definitions"))
         }
     }
 

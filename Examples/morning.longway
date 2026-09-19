@@ -1,4 +1,5 @@
-(shortcut "Morning"
+(define (morning)
   (notification "Good morning!")
   (wait 1)
-  (open-url "https://example.com"))
+  (open-url "https://example.com")
+  "Morning complete")
