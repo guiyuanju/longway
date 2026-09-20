@@ -1443,6 +1443,275 @@ final class LongwayCoreTests: XCTestCase {
         }
     }
 
+    func testDictionaryLiteralLowersToADictionaryActionWithTypedFields() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (person)
+          (dict "name" "Ada" "born" 1815))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.dictionary",
+            "is.workflow.actions.output"
+        ])
+
+        let items = try XCTUnwrap(dictionaryFieldItems(in: actions[0]))
+        XCTAssertEqual(items.compactMap { $0["WFItemType"] as? Int }, [0, 3])
+        XCTAssertEqual(items.compactMap { textTokenLiteral($0["WFKey"]) }, ["name", "born"])
+        XCTAssertEqual(items.compactMap { textTokenLiteral($0["WFValue"]) }, ["Ada", "1815"])
+
+        // Unlike a list, a dictionary has its own Shortcut content class.
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFDictionaryContentItem"]
+        )
+    }
+
+    func testDictionaryReadsLowerToGetDictionaryValue() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (value) (dict-ref (dict "name" "Ada") "name"))
+        (define (keys) (dict-keys (dict "name" "Ada")))
+        (define (values) (dict-values (dict "name" "Ada")))
+        """)
+
+        var valueTypes: [String: String] = [:]
+        for shortcut in program.shortcuts {
+            let propertyList = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: shortcut.data, format: nil) as? [String: Any]
+            )
+            let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+            let dictionaryUUID = try XCTUnwrap(
+                (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+            )
+            XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.getvalueforkey")
+            let parameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+            valueTypes[shortcut.name] = parameters["WFGetDictionaryValueType"] as? String
+
+            // The read must reference the Dictionary action that produced it.
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+            XCTAssertEqual(inputValue["OutputUUID"] as? String, dictionaryUUID)
+        }
+        XCTAssertEqual(valueTypes, ["value": "Value", "keys": "All Keys", "values": "All Values"])
+    }
+
+    func testDictionaryKeyIsABareStringForALiteralAndATokenForAComputedKey() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (fixed) (dict-ref (dict "name" "Ada") "name"))
+        (define (computed key) (dict-ref (dict "name" "Ada") key))
+        """)
+
+        // Apple's own shortcuts write a literal key as a bare string.
+        let fixed = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[0].data, format: nil) as? [String: Any]
+        )
+        let fixedActions = try XCTUnwrap(fixed["WFWorkflowActions"] as? [[String: Any]])
+        let fixedRead = try XCTUnwrap(fixedActions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(fixedRead["WFDictionaryKey"] as? String, "name")
+
+        // A computed key needs the attachment-bearing token string instead.
+        let computed = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let computedActions = try XCTUnwrap(computed["WFWorkflowActions"] as? [[String: Any]])
+        // The parameter extraction that reads `key` off Shortcut Input is a
+        // Get Dictionary Value too; the dict-ref is the last one.
+        let read = try XCTUnwrap(computedActions.last {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.getvalueforkey"
+        })
+        let parameters = try XCTUnwrap(read["WFWorkflowActionParameters"] as? [String: Any])
+        let key = try XCTUnwrap(parameters["WFDictionaryKey"] as? [String: Any])
+        XCTAssertEqual(key["WFSerializationType"] as? String, "WFTextTokenString")
+        let keyValue = try XCTUnwrap(key["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(keyValue["attachmentsByRange"] as? [String: Any])
+        XCTAssertNotNil(attachments["{0, 1}"])
+    }
+
+    func testDictionarySetDerivesANewDictionaryFromTheOldOne() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (renamed)
+          (dict-ref (dict-set (dict "name" "Ada") "name" "Grace") "name"))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.dictionary",
+            "is.workflow.actions.setvalueforkey",
+            "is.workflow.actions.getvalueforkey",
+            "is.workflow.actions.output"
+        ])
+
+        let dictionaryUUID = try XCTUnwrap(
+            (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let setParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        // Set Dictionary Value names its input WFDictionary, not the WFInput
+        // its Get counterpart uses.
+        XCTAssertNil(setParameters["WFInput"])
+        let target = try XCTUnwrap(setParameters["WFDictionary"] as? [String: Any])
+        let targetValue = try XCTUnwrap(target["Value"] as? [String: Any])
+        XCTAssertEqual(targetValue["OutputUUID"] as? String, dictionaryUUID)
+        XCTAssertEqual(setParameters["WFDictionaryKey"] as? String, "name")
+        XCTAssertEqual(textTokenLiteral(setParameters["WFDictionaryValue"]), "Grace")
+
+        // The read sees the updated dictionary, not the one dict built.
+        let setUUID = try XCTUnwrap(setParameters["UUID"] as? String)
+        let readParameters = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(readParameters["WFInput"] as? [String: Any])
+        let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+        XCTAssertEqual(inputValue["OutputUUID"] as? String, setUUID)
+    }
+
+    func testDictionaryFieldCarriesNestedListsAndDictionaries() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (inner) (dict "name" "Ada"))
+        (define (record)
+          (dict "languages" (list "Analytical Engine") "person" (inner)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let build = try XCTUnwrap(actions.last { action in
+            action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.dictionary"
+        })
+        let items = try XCTUnwrap(dictionaryFieldItems(in: build))
+
+        // WorkflowKit numbers these item types 1 dictionary and 2 array, and
+        // substitutes a whole-field variable through the matching state class.
+        // A text field would flatten the list to newline-joined text and the
+        // dictionary to JSON.
+        XCTAssertEqual(items.compactMap { $0["WFItemType"] as? Int }, [2, 1])
+        let list = try XCTUnwrap(items[0]["WFValue"] as? [String: Any])
+        XCTAssertEqual(list["WFSerializationType"] as? String, "WFArraySubstitutableParameterState")
+        let nested = try XCTUnwrap(items[1]["WFValue"] as? [String: Any])
+        XCTAssertEqual(nested["WFSerializationType"] as? String, "WFDictionarySubstitutableParameterState")
+    }
+
+    func testDictionaryCrossesAFunctionCallAsADictionaryTypedArgument() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (label-of record) (dict-ref record "name"))
+        (define (main) (label-of (dict "name" "Ada")))
+        """)
+
+        // The callee's parameter is inferred as a dictionary, so the caller
+        // must hand it over through the dictionary-typed field rather than
+        // through a text field that would flatten it to JSON.
+        let caller = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(caller["WFWorkflowActions"] as? [[String: Any]])
+        let build = try XCTUnwrap(actions.first)
+        let buildUUID = try XCTUnwrap(
+            (build["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let arguments = try XCTUnwrap(actions.first { action in
+            (action["WFWorkflowActionParameters"] as? [String: Any])?["CustomOutputName"] as? String == "Arguments"
+        })
+        let items = try XCTUnwrap(dictionaryFieldItems(in: arguments))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0]["WFItemType"] as? Int, 1)
+        XCTAssertEqual(textTokenLiteral(items[0]["WFKey"]), "record")
+
+        let value = try XCTUnwrap(items[0]["WFValue"] as? [String: Any])
+        XCTAssertEqual(value["WFSerializationType"] as? String, "WFDictionarySubstitutableParameterState")
+        let attachment = try XCTUnwrap(value["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["WFSerializationType"] as? String, "WFTextTokenAttachment")
+        let reference = try XCTUnwrap(attachment["Value"] as? [String: Any])
+        XCTAssertEqual(reference["OutputUUID"] as? String, buildUUID)
+    }
+
+    func testDictionaryPassesThroughGetVariableRatherThanText() throws {
+        // Text or Number would flatten a dictionary to JSON, so a dictionary
+        // written to a tail-call loop variable goes through Get Variable.
+        let result = try LongwayCompiler().compile("""
+        (define (walk record index)
+          (if (= index 0)
+              (dict-ref record "name")
+              (walk record (- index 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.repeat.count"))
+
+        let recordWrites = actions.filter { action in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable" else {
+                return false
+            }
+            let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            return parameters?["WFVariableName"] as? String == "record"
+        }
+        XCTAssertEqual(recordWrites.count, 2, "the dictionary is seeded once and rewritten once per iteration")
+
+        // Every value published for the loop variable must come from a
+        // Get Variable passthrough, never from a Text or Number action.
+        for write in recordWrites {
+            let parameters = try XCTUnwrap(write["WFWorkflowActionParameters"] as? [String: Any])
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let value = try XCTUnwrap(input["Value"] as? [String: Any])
+            let uuid = try XCTUnwrap(value["OutputUUID"] as? String)
+            let producer = try XCTUnwrap(actions.first { action in
+                (action["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == uuid
+            })
+            XCTAssertEqual(
+                producer["WFWorkflowActionIdentifier"] as? String,
+                "is.workflow.actions.getvariable"
+            )
+        }
+    }
+
+    func testDictionaryFormsValidateOperandTypesAndArity() throws {
+        let cases: [(String, String)] = [
+            ("(define (main) (dict-ref 7 \"k\"))", "dict-ref expects a dictionary"),
+            ("(define (main) (dict-keys \"text\"))", "dict-keys expects a dictionary"),
+            ("(define (main) (dict-values (list 1)))", "dict-values expects a dictionary"),
+            ("(define (main) (dict-ref (dict \"k\" 1) 2))", "dict-ref expects a text key"),
+            ("(define (main) (dict \"k\"))", "dict expects alternating keys and values, got 1 forms"),
+            ("(define (main) (dict 1 2))", "dict expects a text key"),
+            ("(define (main) (dict \"k\" 1 \"k\" 2))", "duplicate dict key 'k'"),
+            ("(define (main) (dict-ref (dict \"k\" 1)))", "dict-ref expects 2 arguments, got 1"),
+            ("(define (main) (dict-keys (dict \"k\" 1) (dict \"j\" 2)))", "dict-keys expects 1 argument, got 2"),
+            ("(define (main) (dict-set (dict \"k\" 1) \"k\"))", "dict-set expects 3 arguments, got 2"),
+            (
+                "(define (main) (dict-set (dict \"k\" 1) \"k\" (list 1)))",
+                "dict-set cannot store lists; build the dictionary with dict instead"
+            ),
+            (
+                "(define (main) (dict-set (dict \"k\" 1) \"k\" (dict \"j\" 2)))",
+                "dict-set cannot store dictionaries; build the dictionary with dict instead"
+            ),
+            ("(define (main) (list (dict \"k\" 1)))", "list elements cannot be dictionaries"),
+            ("(define (main) (+ (dict \"k\" 1) 2))", "+ expects number operands")
+        ]
+        for (source, message) in cases {
+            XCTAssertThrowsError(try LongwayCompiler().compile(source), source) { error in
+                XCTAssertEqual((error as? LongwayError)?.message, message, source)
+            }
+        }
+    }
+
+    func testDictionaryNamesAreReservedForBuiltinForms() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (dict-ref a) a)
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name 'dict-ref' is reserved")
+        }
+    }
+
+    private func dictionaryFieldItems(in action: [String: Any]) -> [[String: Any]]? {
+        let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+        let items = parameters?["WFItems"] as? [String: Any]
+        let value = items?["Value"] as? [String: Any]
+        return value?["WFDictionaryFieldValueItems"] as? [[String: Any]]
+    }
+
     private func textLiteral(in action: [String: Any]) -> String? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
         return textTokenLiteral(parameters?["WFTextActionText"])

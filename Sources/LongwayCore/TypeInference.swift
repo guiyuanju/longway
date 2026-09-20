@@ -242,8 +242,8 @@ struct SignatureInferrer {
         if operation == "list" {
             for operand in operands {
                 let element = try inferValue(operand, environment: environment, inference: inference)
-                guard inference.boundType(element) != .list else {
-                    throw LongwayError("list elements cannot be lists", at: operand.location)
+                if let bound = inference.boundType(element), bound == .list || bound == .dictionary {
+                    throw LongwayError("list elements cannot be \(bound.pluralName)", at: operand.location)
                 }
             }
             return inference.makeVariable(boundTo: .list)
@@ -280,6 +280,70 @@ struct SignatureInferrer {
         default:
             return inference.makeVariable()
         }
+    }
+
+    /// Dictionary values are untyped in the same way list elements are, so a
+    /// `dict-ref` returns a fresh unconstrained variable. Keys are always text.
+    private func inferDictionaryOperation(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: InferenceEnvironment,
+        inference: TypeInference
+    ) throws -> Int {
+        if operation == "dict" {
+            guard operands.count.isMultiple(of: 2) else {
+                throw LongwayError(
+                    "dict expects alternating keys and values, got \(operands.count) forms",
+                    at: location
+                )
+            }
+            for pair in stride(from: 0, to: operands.count, by: 2) {
+                let key = try inferValue(operands[pair], environment: environment, inference: inference)
+                try inference.constrain(
+                    key,
+                    to: .text,
+                    message: "dict expects a text key",
+                    at: operands[pair].location
+                )
+                _ = try inferValue(operands[pair + 1], environment: environment, inference: inference)
+            }
+            return inference.makeVariable(boundTo: .dictionary)
+        }
+
+        try requireArgumentCount(
+            ["dict-set": 3, "dict-ref": 2][operation] ?? 1,
+            action: operation,
+            arguments: operands,
+            at: location
+        )
+        let dictionary = try inferValue(operands[0], environment: environment, inference: inference)
+        try inference.constrain(
+            dictionary,
+            to: .dictionary,
+            message: "\(operation) expects a dictionary",
+            at: operands[0].location
+        )
+        if operation == "dict-keys" || operation == "dict-values" {
+            return inference.makeVariable(boundTo: .list)
+        }
+
+        let key = try inferValue(operands[1], environment: environment, inference: inference)
+        try inference.constrain(
+            key,
+            to: .text,
+            message: "\(operation) expects a text key",
+            at: operands[1].location
+        )
+        if operation == "dict-ref" {
+            return inference.makeVariable()
+        }
+
+        let value = try inferValue(operands[2], environment: environment, inference: inference)
+        if let bound = inference.boundType(value) {
+            try requireStorableInDictionaryField(bound, at: operands[2].location)
+        }
+        return inference.makeVariable(boundTo: .dictionary)
     }
 
     private func inferValue(
@@ -353,6 +417,15 @@ struct SignatureInferrer {
             }
             if listOperations.contains(operation) {
                 return try inferListOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment,
+                    inference: inference
+                )
+            }
+            if dictionaryOperations.contains(operation) {
+                return try inferDictionaryOperation(
                     operation,
                     operands: operands,
                     at: expression.location,

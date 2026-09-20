@@ -6,6 +6,10 @@ let equalityConditionCode = 4
 /// Value forms over Shortcuts lists. `list` builds one; the rest read from one.
 let listOperations: Set<String> = ["list", "length", "list-ref", "first", "last", "empty?"]
 
+/// Value forms over Shortcuts dictionaries. `dict` builds one, `dict-set`
+/// derives a new one, and the rest read from one.
+let dictionaryOperations: Set<String> = ["dict", "dict-ref", "dict-set", "dict-keys", "dict-values"]
+
 func mathOperation(_ symbol: String) -> String? {
     switch symbol {
     case "+": "+"

@@ -3,6 +3,7 @@ enum ValueType: Equatable {
     case number
     case boolean
     case list
+    case dictionary
     case any
 
     var name: String {
@@ -11,7 +12,19 @@ enum ValueType: Equatable {
         case .number: "number"
         case .boolean: "boolean"
         case .list: "list"
+        case .dictionary: "dictionary"
         case .any: "value"
+        }
+    }
+
+    var pluralName: String {
+        switch self {
+        case .text: "text values"
+        case .number: "numbers"
+        case .boolean: "booleans"
+        case .list: "lists"
+        case .dictionary: "dictionaries"
+        case .any: "values"
         }
     }
 }

@@ -65,6 +65,14 @@ extension FunctionCompiler {
                     environment: environment
                 )
             }
+            if dictionaryOperations.contains(operation) {
+                return try compileDictionaryOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
             if comparisonOperators.contains(operation) {
                 return try compileComparison(
                     operation,
@@ -136,10 +144,7 @@ extension FunctionCompiler {
         let dictionaryOutputName = "Arguments"
         actions.append(ShortcutPlist.action("is.workflow.actions.dictionary", parameters: [
             "CustomOutputName": dictionaryOutputName,
-            "WFItems": [
-                "Value": ["WFDictionaryFieldValueItems": items],
-                "WFSerializationType": "WFDictionaryFieldValue"
-            ]
+            "WFItems": ShortcutPlist.dictionaryFieldValue(items: items)
         ], uuid: dictionaryUUID))
 
         let resultUUID = UUID().uuidString

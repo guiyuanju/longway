@@ -123,7 +123,40 @@ That traversal is a single-form tail-recursive definition, so it compiles to one
 
 A list may be passed to another Longway function and returned from one. An argument travels as an array-typed field in the argument dictionary, which preserves it; a result returns through Stop and Output as a single attachment, the same way the Shortcuts editor writes a list variable.
 
-Lists also cannot nest — a list element may not itself be a list — and there is no `cons`, `append`, `map`, or `filter` yet.
+Lists also cannot nest — a list element may not itself be a list or a dictionary — and there is no `cons`, `append`, `map`, or `filter` yet.
+
+## Dictionaries
+
+`(dict ...)` builds a Shortcuts dictionary from alternating keys and values. Keys are text; values are untyped, just like list elements:
+
+```scheme
+(define (greeting)
+  (let ((person (dict "name" "Ada" "born" 1815)))
+    (dict-ref person "name")))
+```
+
+`dict-ref` reads one value, `dict-keys` and `dict-values` read all of them out as lists, and `dict-set` answers a new dictionary rather than changing the one it was given:
+
+```scheme
+(define (renamed)
+  (let ((person (dict "name" "Ada")))
+    (dict-ref (dict-set person "name" "Grace") "name")))
+```
+
+Because a read is untyped, the operation consuming it decides its type — `(- year (dict-ref person "born"))` reads `born` as a number.
+
+Unlike a list, a dictionary may hold a list or another dictionary, so records can nest:
+
+```scheme
+(define (record)
+  (dict "name" "Ada" "languages" (list "Analytical Engine")))
+```
+
+The one exception is `dict-set`, which cannot store a list or a dictionary; build those with `dict`.
+
+Dictionaries cross function calls in both directions, as arguments and as return values.
+
+Two sharp edges. Shortcuts treats `.` in a key as a path into nested content, so `(dict-ref d "a.b")` looks for `b` inside `a` rather than for a key literally named `a.b`. And there is no `dict-has-key?` yet — Shortcuts has no key-membership action, and the available workarounds are not safe to rely on until `dict-set`'s copy-versus-mutate behavior is confirmed on a device.
 
 ## Expressions and actions
 
@@ -154,6 +187,10 @@ Numeric comparisons accept at least two operands. Variadic comparisons test adja
 | `(list-ref lst index)` | Read an item by 0-based index |
 | `(first lst)`, `(last lst)` | Read the first or last item |
 | `(empty? lst)` | Test for a list with no items |
+| `(dict key value …)` | Build a dictionary from alternating keys and values |
+| `(dict-ref d key)` | Read one value by key |
+| `(dict-set d key value)` | Answer a new dictionary with `key` set |
+| `(dict-keys d)`, `(dict-values d)` | Read all keys or all values as a list |
 | `(show-result value)` | Show and return a value when used last |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
@@ -185,4 +222,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, dictionaries, and a larger action catalog remain future work.
+Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, dictionaries, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, `dict-has-key?` and dictionary removal, and a larger action catalog remain future work.

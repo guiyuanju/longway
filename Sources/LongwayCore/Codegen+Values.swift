@@ -72,6 +72,8 @@ extension FunctionCompiler {
                 return emitBoolean(value, into: &actions)
             case .list:
                 return emitPassthrough(output, type: .list, name: "List", into: &actions)
+            case .dictionary:
+                return emitPassthrough(output, type: .dictionary, name: "Dictionary", into: &actions)
             case .any:
                 return emitGeneric(output, into: &actions)
             }
@@ -105,9 +107,10 @@ extension FunctionCompiler {
     }
 
     /// Re-publishes a value under a fresh UUID without coercing it. Values that
-    /// have no typed producer action - generic ones, and lists, which Shortcuts
-    /// would flatten to text if passed through Text or Number - go through
-    /// Get Variable, which carries the runtime value across unchanged.
+    /// have no typed producer action - generic ones, and lists and dictionaries,
+    /// which Shortcuts would flatten to newline-joined text and to JSON if
+    /// passed through Text or Number - go through Get Variable, which carries
+    /// the runtime value across unchanged.
     func emitPassthrough(
         _ output: ActionOutputReference,
         type: ValueType,
@@ -221,29 +224,53 @@ extension FunctionCompiler {
         value: CompiledValue.Value,
         expectedType: ValueType
     ) -> [String: Any] {
-        let valueType = expectedType == .any ? value.type : expectedType
-        if valueType == .list {
+        dictionaryItem(
+            keyToken: ShortcutPlist.textTokenString(key),
+            value: value,
+            expectedType: expectedType
+        )
+    }
+
+    /// One `WFDictionaryFieldValueItems` entry. `WFItemType` is WorkflowKit's
+    /// own numbering - 0 text, 1 dictionary, 2 array, 3 number - and a list or
+    /// dictionary value must use its own item type: through a text field
+    /// Shortcuts flattens a list to newline-joined text and a dictionary to
+    /// JSON. Booleans stay text because Longway represents them as `#t`/`#f`
+    /// rather than as Shortcuts Booleans.
+    func dictionaryItem(
+        keyToken: [String: Any],
+        value: CompiledValue.Value,
+        expectedType: ValueType
+    ) -> [String: Any] {
+        switch expectedType == .any ? value.type : expectedType {
+        case .list:
             guard case let .output(output) = value else {
                 preconditionFailure("a list value is always an action output")
             }
             return [
                 "WFItemType": 2,
-                "WFKey": ShortcutPlist.textTokenString(key),
+                "WFKey": keyToken,
                 "WFValue": ShortcutPlist.arrayParameterState(name: output.name, uuid: output.uuid)
             ]
+        case .dictionary:
+            guard case let .output(output) = value else {
+                preconditionFailure("a dictionary value is always an action output")
+            }
+            return [
+                "WFItemType": 1,
+                "WFKey": keyToken,
+                "WFValue": ShortcutPlist.dictionaryParameterState(name: output.name, uuid: output.uuid)
+            ]
+        case let valueType:
+            return [
+                "WFItemType": valueType == .number ? 3 : 0,
+                "WFKey": keyToken,
+                "WFValue": dictionaryValue(value)
+            ]
         }
-        return [
-            "WFItemType": dictionaryItemType(valueType),
-            "WFKey": ShortcutPlist.textTokenString(key),
-            "WFValue": dictionaryValue(value)
-        ]
     }
 
-    private func dictionaryItemType(_ type: ValueType) -> Int {
-        type == .number ? 3 : 0
-    }
-
-    private func dictionaryValue(_ value: CompiledValue.Value) -> [String: Any] {
+    func dictionaryValue(_ value: CompiledValue.Value) -> [String: Any] {
         switch value {
         case let .literalString(string):
             ShortcutPlist.textTokenString(string)

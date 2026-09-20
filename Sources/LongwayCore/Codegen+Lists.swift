@@ -40,8 +40,13 @@ extension FunctionCompiler {
         var items: [Any] = []
         for operand in operands {
             let element = try compileValue(operand, environment: environment)
-            guard element.value.type != .list else {
-                throw LongwayError("list elements cannot be lists", at: operand.location)
+            // A `WFItems` entry is a plain string or a text token string, which
+            // flattens a list to newline-joined text and a dictionary to JSON.
+            guard element.value.type != .list, element.value.type != .dictionary else {
+                throw LongwayError(
+                    "list elements cannot be \(element.value.type.pluralName)",
+                    at: operand.location
+                )
             }
             actions.append(contentsOf: element.actions)
             items.append(listItem(element.value))

@@ -53,6 +53,15 @@ enum ShortcutPlist {
         ]
     }
 
+    /// The `WFItems` parameter of a Dictionary action, and the value of a
+    /// dictionary-typed field inside one.
+    static func dictionaryFieldValue(items: [[String: Any]]) -> [String: Any] {
+        [
+            "Value": ["WFDictionaryFieldValueItems": items],
+            "WFSerializationType": "WFDictionaryFieldValue"
+        ]
+    }
+
     /// A dictionary field whose whole array value is one variable. Shortcuts
     /// writes the array-typed field (`WFItemType` 2) as an
     /// `WFArraySubstitutableParameterState` wrapping the variable attachment,
@@ -61,6 +70,17 @@ enum ShortcutPlist {
         [
             "Value": actionOutputAttachment(name: name, uuid: uuid),
             "WFSerializationType": "WFArraySubstitutableParameterState"
+        ]
+    }
+
+    /// The same whole-field substitution for a dictionary-typed field
+    /// (`WFItemType` 1). WorkflowKit pairs each item type with the parameter
+    /// state class it substitutes a variable through, and names the serialized
+    /// form after that class, exactly as the array case does.
+    static func dictionaryParameterState(name: String, uuid: String) -> [String: Any] {
+        [
+            "Value": actionOutputAttachment(name: name, uuid: uuid),
+            "WFSerializationType": "WFDictionarySubstitutableParameterState"
         ]
     }
 
