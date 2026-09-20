@@ -229,6 +229,59 @@ struct SignatureInferrer {
         return bodyEnvironment
     }
 
+    /// List elements are untyped, so every read returns a fresh unconstrained
+    /// variable that whatever consumes it may bind. Only the list operand and
+    /// `list-ref`'s index carry constraints.
+    private func inferListOperation(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: InferenceEnvironment,
+        inference: TypeInference
+    ) throws -> Int {
+        if operation == "list" {
+            for operand in operands {
+                let element = try inferValue(operand, environment: environment, inference: inference)
+                guard inference.boundType(element) != .list else {
+                    throw LongwayError("list elements cannot be lists", at: operand.location)
+                }
+            }
+            return inference.makeVariable(boundTo: .list)
+        }
+
+        try requireArgumentCount(
+            operation == "list-ref" ? 2 : 1,
+            action: operation,
+            arguments: operands,
+            at: location
+        )
+        let list = try inferValue(operands[0], environment: environment, inference: inference)
+        try inference.constrain(
+            list,
+            to: .list,
+            message: "\(operation) expects a list",
+            at: operands[0].location
+        )
+        if operation == "list-ref" {
+            let index = try inferValue(operands[1], environment: environment, inference: inference)
+            try inference.constrain(
+                index,
+                to: .number,
+                message: "list-ref expects a number index",
+                at: operands[1].location
+            )
+        }
+
+        switch operation {
+        case "length":
+            return inference.makeVariable(boundTo: .number)
+        case "empty?":
+            return inference.makeVariable(boundTo: .boolean)
+        default:
+            return inference.makeVariable()
+        }
+    }
+
     private func inferValue(
         _ expression: Expression,
         environment: InferenceEnvironment,
@@ -297,6 +350,15 @@ struct SignatureInferrer {
                     )
                 }
                 return inference.makeVariable(boundTo: .number)
+            }
+            if listOperations.contains(operation) {
+                return try inferListOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment,
+                    inference: inference
+                )
             }
             if comparisonOperators.contains(operation) {
                 guard operands.count >= 2 else {

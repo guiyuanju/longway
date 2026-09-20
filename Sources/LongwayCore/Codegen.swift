@@ -77,7 +77,7 @@ struct Workflow {
             ["WFStringContentItem"]
         case .number:
             ["WFNumberContentItem"]
-        case .any:
+        case .list, .any:
             ["WFStringContentItem", "WFNumberContentItem", "WFGenericFileContentItem"]
         }
     }

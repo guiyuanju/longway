@@ -57,6 +57,14 @@ extension FunctionCompiler {
                     environment: environment
                 )
             }
+            if listOperations.contains(operation) {
+                return try compileListOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
             if comparisonOperators.contains(operation) {
                 return try compileComparison(
                     operation,

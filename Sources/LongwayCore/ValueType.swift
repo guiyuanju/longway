@@ -2,6 +2,7 @@ enum ValueType: Equatable {
     case text
     case number
     case boolean
+    case list
     case any
 
     var name: String {
@@ -9,6 +10,7 @@ enum ValueType: Equatable {
         case .text: "text"
         case .number: "number"
         case .boolean: "boolean"
+        case .list: "list"
         case .any: "value"
         }
     }

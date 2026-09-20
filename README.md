@@ -100,6 +100,31 @@ Direct and mutual recursion are supported. Recursive calls run the generated Sho
 
 A function whose entire body is a single direct self-call in tail position — like `sum-to` above, where every branch of the closing `if` either returns a plain value or calls `sum-to` again with no further work — compiles to a bounded loop inside the same Shortcut instead of a recursive Shortcut call, so it no longer consumes Shortcut runtime call-stack depth. As soon as a base case is reached, the loop stops the whole Shortcut immediately instead of continuing to iterate, so ordinary terminating recursion runs in exactly as many steps as it needs. The loop is still capped at a fixed number of iterations (currently 2000) as a safety net for recursion that never reaches a base case; in that pathological case it returns whatever the accumulator held at the bound instead of running forever. Mutual recursion (like `even`/`odd` calling each other), non-tail recursion (a self-call used inside another expression, e.g. `(+ 1 (count-up (- n 1)))`), and any function whose body has more than one form or performs a `notification`/`open-url`/`wait`/`show-result` on the path to its self-call are not loop-optimized — they keep calling the generated Shortcut recursively and are still bounded by Shortcut runtime call-stack depth.
 
+## Lists
+
+`(list ...)` builds a Shortcuts list. Elements are ordered and untyped — a list may mix text, numbers, and Booleans — and indexes start at 0 like Scheme's `list-ref`:
+
+```scheme
+(define (second-name)
+  (let ((names (list "Ada" "Grace" "Alan")))
+    (list-ref names 1)))
+```
+
+`length` counts items, `first` and `last` read the ends, `empty?` tests for no items, and `list-ref` reads by index. Reading an element yields a generic value, so the operation that consumes it decides its type:
+
+```scheme
+(define (sum-list items index total)
+  (if (= index (length items))
+      total
+      (sum-list items (+ index 1) (+ total (list-ref items index)))))
+```
+
+That traversal is a single-form tail-recursive definition, so it compiles to one bounded in-workflow loop: the list stays in a Shortcuts variable and is never re-serialized between iterations.
+
+A list may be passed to another Longway function and returned from one. An argument travels as an array-typed field in the argument dictionary, which preserves it; a result returns through Stop and Output as a single attachment, the same way the Shortcuts editor writes a list variable.
+
+Lists also cannot nest — a list element may not itself be a list — and there is no `cons`, `append`, `map`, or `filter` yet.
+
 ## Expressions and actions
 
 Bindings are lexically scoped. A `let` initializer sees the outer scope rather than sibling bindings:
@@ -124,6 +149,11 @@ Numeric comparisons accept at least two operands. Variadic comparisons test adja
 | `(if condition consequent alternative)` | Lazily select a value or action branch |
 | `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
 | `(not value)` | Boolean negation |
+| `(list a b …)` | Build a list |
+| `(length lst)` | Number of items |
+| `(list-ref lst index)` | Read an item by 0-based index |
+| `(first lst)`, `(last lst)` | Read the first or last item |
+| `(empty? lst)` | Test for a list with no items |
 | `(show-result value)` | Show and return a value when used last |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
@@ -155,4 +185,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, richer value types, and a larger action catalog remain future work.
+Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, dictionaries, and a larger action catalog remain future work.

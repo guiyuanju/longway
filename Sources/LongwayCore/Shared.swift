@@ -3,6 +3,9 @@ let comparisonOperators: Set<String> = ["=", "<", "<=", ">", ">="]
 /// Shortcut condition code for `is`, the equality comparison.
 let equalityConditionCode = 4
 
+/// Value forms over Shortcuts lists. `list` builds one; the rest read from one.
+let listOperations: Set<String> = ["list", "length", "list-ref", "first", "last", "empty?"]
+
 func mathOperation(_ symbol: String) -> String? {
     switch symbol {
     case "+": "+"

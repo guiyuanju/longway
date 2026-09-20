@@ -53,6 +53,17 @@ enum ShortcutPlist {
         ]
     }
 
+    /// A dictionary field whose whole array value is one variable. Shortcuts
+    /// writes the array-typed field (`WFItemType` 2) as an
+    /// `WFArraySubstitutableParameterState` wrapping the variable attachment,
+    /// rather than as a list of individual items.
+    static func arrayParameterState(name: String, uuid: String) -> [String: Any] {
+        [
+            "Value": actionOutputAttachment(name: name, uuid: uuid),
+            "WFSerializationType": "WFArraySubstitutableParameterState"
+        ]
+    }
+
     static func shortcutInputAttachment() -> [String: Any] {
         [
             "Value": ["Type": "ExtensionInput"],
