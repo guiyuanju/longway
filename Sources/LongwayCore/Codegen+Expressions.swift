@@ -34,7 +34,7 @@ extension FunctionCompiler {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
             let operands = Array(parts.dropFirst())
-            if operation == "let" {
+            if operation == "let" || operation == "let*" {
                 return try compileLetResult(
                     parts: parts,
                     at: expression.location,

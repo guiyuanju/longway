@@ -364,6 +364,11 @@ final class LongwayCoreTests: XCTestCase {
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "function name '+' is reserved")
         }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (let*) "no")
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name 'let*' is reserved")
+        }
         XCTAssertThrowsError(try LongwayCompiler().compileProgram("""
         (define (helper) "one")
         (define (Helper) "two")
@@ -1063,6 +1068,94 @@ final class LongwayCoreTests: XCTestCase {
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
         XCTAssertEqual(actions[0]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.url")
         XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.openurl")
+    }
+
+    func testLetStarInitializersSeeEarlierBindings() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (test)
+          (let* ((x 10)
+                 (y (+ x 5)))
+            y))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.number",
+            "is.workflow.actions.math",
+            "is.workflow.actions.output"
+        ])
+
+        let xUUID = try XCTUnwrap(
+            (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let math = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(math["WFInput"] as? [String: Any])
+        let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+        XCTAssertEqual(inputValue["OutputUUID"] as? String, xUUID)
+    }
+
+    func testLetStarCanWrapActionForms() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (test)
+          (let* ((greeting "Hello")
+                 (message (string-append greeting "!")))
+            (show-result message))
+          "done")
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertTrue(actions.contains {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.showresult"
+        })
+    }
+
+    func testLetStarBindingsCanSequentiallyShadow() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (test)
+          (let* ((x 10)
+                 (x (+ x 1)))
+            x))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let numberUUID = try XCTUnwrap(
+            (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let mathParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        let mathInput = try XCTUnwrap(mathParameters["WFInput"] as? [String: Any])
+        let mathInputValue = try XCTUnwrap(mathInput["Value"] as? [String: Any])
+        XCTAssertEqual(mathInputValue["OutputUUID"] as? String, numberUUID)
+
+        let mathUUID = try XCTUnwrap(mathParameters["UUID"] as? String)
+        let outputParameters = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let output = try XCTUnwrap(outputParameters["WFOutput"] as? [String: Any])
+        let outputValue = try XCTUnwrap(output["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(outputValue["attachmentsByRange"] as? [String: Any])
+        let attachment = try XCTUnwrap(attachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputUUID"] as? String, mathUUID)
+    }
+
+    func testLetStarPreservesTailCallOptimization() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (count-down n)
+          (let* ((next (- n 1)))
+            (if (= n 0)
+                0
+                (count-down next))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.repeat.count"))
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.runworkflow"))
     }
 
     func testLetRejectsUnknownVariable() throws {

@@ -92,7 +92,7 @@ struct DefinitionParser {
 
     private var reservedFunctionNames: Set<String> {
         [
-            "define", "let", "if", "+", "-", "*", "/", "=", "<", "<=", ">", ">=",
+            "define", "let", "let*", "if", "+", "-", "*", "/", "=", "<", "<=", ">", ">=",
             "and", "or", "not", "show-result", "notification", "open-url", "wait",
             "list", "length", "list-ref", "first", "last", "empty?",
             "dict", "dict-ref", "dict-set", "dict-keys", "dict-values",

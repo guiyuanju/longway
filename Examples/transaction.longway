@@ -1,6 +1,6 @@
 ; Interactive Beancount transaction entry, modeled after the copied Shortcut.
 (define (transaction)
-  (let ((menu
+  (let* ((menu
          (split-lines
           "Suica | Assets:JP:IC:Suica JPY
 交通 | Expenses:Transport JPY
@@ -48,24 +48,23 @@ PayPay | Assets:JP:PayPay JPY
 投资收益 | Income:Investment JPY
 奖金 | Income:JP:Bonus JPY
 其他收入 | Income:Other JPY
-应付款 | Liabilities:Payable JPY")))
-    (let ((incoming-choice (choose-from-list menu "入账账户")))
-      (let ((incoming-parts (split-text incoming-choice " | ")))
-        (let ((incoming-tail (split-whitespace (last incoming-parts))))
-          (let ((incoming-account (first incoming-tail)))
-            (let ((outgoing-choice (choose-from-list menu "出账账户")))
-              (let ((outgoing-parts (split-text outgoing-choice " | ")))
-                (let ((outgoing-tail (split-whitespace (last outgoing-parts))))
-                  (let ((outgoing-account (first outgoing-tail))
-                        (currency (last outgoing-tail)))
-                    (let ((amount (ask-number "金额")))
-                      (let ((counterparty (ask-text "交易对象")))
-                        (let ((description (ask-text "交易说明")))
-                          (let ((date (format-current-date "yyyy-MM-dd")))
-                            (let ((file-path
-                                   (format-current-date
-                                    "'ledger/'yyyy'/'yyyy-MM'.beancount'")))
-                              (string-append
-                               "\n\n" date " * \"" counterparty "\" \"" description "\"\n"
-                               "  " incoming-account "  " (number->text amount) " " currency "\n"
-                               "  " outgoing-account))))))))))))))))
+应付款 | Liabilities:Payable JPY"))
+         (incoming-choice (choose-from-list menu "入账账户"))
+         (incoming-parts (split-text incoming-choice " | "))
+         (incoming-tail (split-whitespace (last incoming-parts)))
+         (incoming-account (first incoming-tail))
+         (outgoing-choice (choose-from-list menu "出账账户"))
+         (outgoing-parts (split-text outgoing-choice " | "))
+         (outgoing-tail (split-whitespace (last outgoing-parts)))
+         (outgoing-account (first outgoing-tail))
+         (currency (last outgoing-tail))
+         (amount (ask-number "金额"))
+         (counterparty (ask-text "交易对象"))
+         (description (ask-text "交易说明"))
+         (date (format-current-date "yyyy-MM-dd"))
+         (file-path
+          (format-current-date "'ledger/'yyyy'/'yyyy-MM'.beancount'")))
+    (string-append
+     "\n\n" date " * \"" counterparty "\" \"" description "\"\n"
+     "  " incoming-account "  " (number->text amount) " " currency "\n"
+     "  " outgoing-account)))

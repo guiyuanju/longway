@@ -25,7 +25,7 @@ private let tailCallSideEffectingForms: Set<String> = [
 /// A function is loop-compiled only when its entire body is one expression
 /// (no statements that would need to fire once per logical call, since a
 /// no-progress loop iteration silently re-runs whatever's in tail position)
-/// whose tail positions - through `let` and `if` - contain no action-catalog
+/// whose tail positions - through `let`, `let*`, and `if` - contain no action-catalog
 /// side effects and reach a direct self-call with matching arity. Anything
 /// else (mutual recursion, non-tail recursion, side effects) falls back to
 /// the existing Run-Shortcut-per-call recursion, unchanged.
@@ -60,7 +60,7 @@ private func tailSelfCall(
         return false
     }
     switch formName {
-    case "let":
+    case "let", "let*":
         guard parts.count >= 3, let last = parts.dropFirst(2).last else { return false }
         return tailSelfCall(last, functionName: functionName, arity: arity)
     case "if":
@@ -149,7 +149,7 @@ extension FunctionCompiler {
         )
     }
 
-    /// Walks the same `let`/`if` tail-position shape `tailSelfCall` validated,
+    /// Walks the same `let`/`let*`/`if` tail-position shape `tailSelfCall` validated,
     /// emitting statements instead of a value: a base-case leaf records its
     /// value into the result variable, a recursive-step leaf computes all of
     /// its new argument values before overwriting any parameter variable
@@ -164,7 +164,7 @@ extension FunctionCompiler {
         if case let .list(parts) = expression.value, let head = parts.first,
            case let .symbol(formName) = head.value {
             switch formName {
-            case "let":
+            case "let", "let*":
                 let prepared = try compileLetBindings(parts: parts, at: expression.location, environment: environment)
                 var actions = prepared.actions
                 let body = Array(parts.dropFirst(2))

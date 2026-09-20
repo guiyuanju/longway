@@ -191,14 +191,16 @@ Prompts and date formats are literals in the current MVP. See `Examples/transact
 
 ## Expressions and actions
 
-Bindings are lexically scoped. A `let` initializer sees the outer scope rather than sibling bindings:
+Bindings are lexically scoped. A `let` initializer sees the outer scope rather than sibling bindings. Use `let*` when each initializer should see the bindings before it:
 
 ```scheme
 (define (calculate)
-  (let ((x 10)
-        (y 4))
-    (* (+ x y) 2)))
+  (let* ((x 10)
+         (y (+ x 4)))
+    (* y 2)))
 ```
+
+A later `let*` binding may reuse a name to sequentially shadow its earlier value. Ordinary `let` continues to reject duplicate names in one binding list.
 
 Numeric comparisons accept at least two operands. Variadic comparisons test adjacent pairs, so `(< 1 2 3)` means both `1 < 2` and `2 < 3`.
 
@@ -206,7 +208,8 @@ Numeric comparisons accept at least two operands. Variadic comparisons test adja
 | --- | --- |
 | `(define (name args …) body … result)` | Compile one standalone function Shortcut |
 | `(name args …)` | Call another generated function Shortcut |
-| `(let ((name value) …) body …)` | Lexically bind values |
+| `(let ((name value) …) body …)` | Lexically bind values with parallel initializer scope |
+| `(let* ((name value) …) body …)` | Lexically bind values sequentially from left to right |
 | `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
 | `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
 | `(= a b …)`, `(< a b …)`, `(<= a b …)`, `(> a b …)`, `(>= a b …)` | Compare adjacent numbers |

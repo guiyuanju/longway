@@ -148,7 +148,7 @@ struct FunctionCompiler {
             throw LongwayError("action name must be a symbol", at: head.location)
         }
 
-        if formName == "let" {
+        if formName == "let" || formName == "let*" {
             return try compileLet(parts: parts, at: expression.location, environment: environment)
         }
         if formName == "if" {
@@ -176,7 +176,7 @@ struct FunctionCompiler {
     ) throws -> CompiledValue {
         if case let .list(parts) = expression.value, let head = parts.first,
            case let .symbol(formName) = head.value {
-            if formName == "let" {
+            if formName == "let" || formName == "let*" {
                 return try compileLetResult(parts: parts, at: expression.location, environment: environment)
             }
             if formName == "show-result" {
@@ -225,33 +225,43 @@ struct FunctionCompiler {
         at location: SourceLocation,
         environment: CompileEnvironment
     ) throws -> (actions: [[String: Any]], environment: CompileEnvironment) {
+        let formName = parts.first?.symbol == "let*" ? "let*" : "let"
+        let isSequential = formName == "let*"
         guard parts.count >= 3 else {
-            throw LongwayError("let expects bindings and at least one body form", at: location)
+            throw LongwayError("\(formName) expects bindings and at least one body form", at: location)
         }
         guard case let .list(bindings) = parts[1].value else {
-            throw LongwayError("let bindings must be a list", at: parts[1].location)
+            throw LongwayError("\(formName) bindings must be a list", at: parts[1].location)
         }
 
         var actions: [[String: Any]] = []
+        var bodyEnvironment = environment
         var localBindings: [String: ActionOutputReference] = [:]
         var bindingNames = Set<String>()
         for binding in bindings {
             guard case let .list(pair) = binding.value, pair.count == 2 else {
-                throw LongwayError("let binding must contain a name and value", at: binding.location)
+                throw LongwayError("\(formName) binding must contain a name and value", at: binding.location)
             }
             guard case let .symbol(name) = pair[0].value else {
-                throw LongwayError("let binding name must be a symbol", at: pair[0].location)
+                throw LongwayError("\(formName) binding name must be a symbol", at: pair[0].location)
             }
-            guard bindingNames.insert(name).inserted else {
+            if !isSequential, !bindingNames.insert(name).inserted {
                 throw LongwayError("duplicate let binding '\(name)'", at: pair[0].location)
             }
-            let compiledValue = try compileValue(pair[1], environment: environment)
+            let initializerEnvironment = isSequential ? bodyEnvironment : environment
+            let compiledValue = try compileValue(pair[1], environment: initializerEnvironment)
             actions.append(contentsOf: compiledValue.actions)
-            localBindings[name] = materialize(compiledValue.value, into: &actions)
+            let output = materialize(compiledValue.value, into: &actions)
+            if isSequential {
+                bodyEnvironment.variables[name] = output
+            } else {
+                localBindings[name] = output
+            }
         }
 
-        var bodyEnvironment = environment
-        bodyEnvironment.variables.merge(localBindings) { _, local in local }
+        if !isSequential {
+            bodyEnvironment.variables.merge(localBindings) { _, local in local }
+        }
         return (actions, bodyEnvironment)
     }
 }

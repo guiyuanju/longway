@@ -124,7 +124,7 @@ struct SignatureInferrer {
             throw LongwayError("expected an action form", at: expression.location)
         }
 
-        if formName == "let" {
+        if formName == "let" || formName == "let*" {
             let prepared = try inferLetBindings(
                 parts: parts,
                 at: expression.location,
@@ -174,7 +174,7 @@ struct SignatureInferrer {
     ) throws -> Int {
         if case let .list(parts) = expression.value, let head = parts.first,
            case let .symbol(formName) = head.value {
-            if formName == "let" {
+            if formName == "let" || formName == "let*" {
                 let prepared = try inferLetBindings(
                     parts: parts,
                     at: expression.location,
@@ -202,30 +202,40 @@ struct SignatureInferrer {
         environment: InferenceEnvironment,
         inference: TypeInference
     ) throws -> InferenceEnvironment {
+        let formName = parts.first?.symbol == "let*" ? "let*" : "let"
+        let isSequential = formName == "let*"
         guard parts.count >= 3 else {
-            throw LongwayError("let expects bindings and at least one body form", at: location)
+            throw LongwayError("\(formName) expects bindings and at least one body form", at: location)
         }
         guard case let .list(bindings) = parts[1].value else {
-            throw LongwayError("let bindings must be a list", at: parts[1].location)
+            throw LongwayError("\(formName) bindings must be a list", at: parts[1].location)
         }
 
+        var bodyEnvironment = environment
         var localBindings: [String: Int] = [:]
         var names = Set<String>()
         for binding in bindings {
             guard case let .list(pair) = binding.value, pair.count == 2 else {
-                throw LongwayError("let binding must contain a name and value", at: binding.location)
+                throw LongwayError("\(formName) binding must contain a name and value", at: binding.location)
             }
             guard case let .symbol(name) = pair[0].value else {
-                throw LongwayError("let binding name must be a symbol", at: pair[0].location)
+                throw LongwayError("\(formName) binding name must be a symbol", at: pair[0].location)
             }
-            guard names.insert(name).inserted else {
+            if !isSequential, !names.insert(name).inserted {
                 throw LongwayError("duplicate let binding '\(name)'", at: pair[0].location)
             }
-            localBindings[name] = try inferValue(pair[1], environment: environment, inference: inference)
+            let initializerEnvironment = isSequential ? bodyEnvironment : environment
+            let value = try inferValue(pair[1], environment: initializerEnvironment, inference: inference)
+            if isSequential {
+                bodyEnvironment.variables[name] = value
+            } else {
+                localBindings[name] = value
+            }
         }
 
-        var bodyEnvironment = environment
-        bodyEnvironment.variables.merge(localBindings) { _, local in local }
+        if !isSequential {
+            bodyEnvironment.variables.merge(localBindings) { _, local in local }
+        }
         return bodyEnvironment
     }
 
@@ -463,7 +473,7 @@ struct SignatureInferrer {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
             let operands = Array(parts.dropFirst())
-            if operation == "let" {
+            if operation == "let" || operation == "let*" {
                 let prepared = try inferLetBindings(
                     parts: parts,
                     at: expression.location,
