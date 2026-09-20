@@ -1,0 +1,23 @@
+; Lists are Shortcuts lists: flat, ordered, and untyped per element.
+(define (report)
+  (let ((names (list "Ada" "Grace" "Alan")))
+    (show-result (first names))))
+
+(define (describe)
+  (let ((names (list "Ada" "Grace" "Alan")))
+    (if (empty? names)
+        "no names"
+        (last names))))
+
+; Traversal is a tail-recursive loop over an index, so the list stays in one
+; Shortcut. A caller hands it over as an array-typed argument.
+(define (sum-list items index total)
+  (if (= index (length items))
+      total
+      (sum-list items (+ index 1) (+ total (list-ref items index)))))
+
+(define (make-totals)
+  (list 3 4 5))
+
+(define (totals)
+  (show-result (sum-list (make-totals) 0 0)))

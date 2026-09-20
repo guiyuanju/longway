@@ -96,7 +96,67 @@ Direct and mutual recursion are supported. Recursive calls run the generated Sho
   (sum-to 10 0))
 ```
 
-`if`, `and`, and `or` keep non-selected expressions inside Shortcut conditional branches, preserving lazy and short-circuit behavior. Recursion is not tail-call optimized and consumes Shortcut runtime depth.
+`if`, `and`, and `or` keep non-selected expressions inside Shortcut conditional branches, preserving lazy and short-circuit behavior.
+
+A function whose entire body is a single direct self-call in tail position — like `sum-to` above, where every branch of the closing `if` either returns a plain value or calls `sum-to` again with no further work — compiles to a bounded loop inside the same Shortcut instead of a recursive Shortcut call, so it no longer consumes Shortcut runtime call-stack depth. As soon as a base case is reached, the loop stops the whole Shortcut immediately instead of continuing to iterate, so ordinary terminating recursion runs in exactly as many steps as it needs. The loop is still capped at a fixed number of iterations (currently 2000) as a safety net for recursion that never reaches a base case; in that pathological case it returns whatever the accumulator held at the bound instead of running forever. Mutual recursion (like `even`/`odd` calling each other), non-tail recursion (a self-call used inside another expression, e.g. `(+ 1 (count-up (- n 1)))`), and any function whose body has more than one form or performs a `notification`/`open-url`/`wait`/`show-result` on the path to its self-call are not loop-optimized — they keep calling the generated Shortcut recursively and are still bounded by Shortcut runtime call-stack depth.
+
+## Lists
+
+`(list ...)` builds a Shortcuts list. Elements are ordered and untyped — a list may mix text, numbers, and Booleans — and indexes start at 0 like Scheme's `list-ref`:
+
+```scheme
+(define (second-name)
+  (let ((names (list "Ada" "Grace" "Alan")))
+    (list-ref names 1)))
+```
+
+`length` counts items, `first` and `last` read the ends, `empty?` tests for no items, and `list-ref` reads by index. Reading an element yields a generic value, so the operation that consumes it decides its type:
+
+```scheme
+(define (sum-list items index total)
+  (if (= index (length items))
+      total
+      (sum-list items (+ index 1) (+ total (list-ref items index)))))
+```
+
+That traversal is a single-form tail-recursive definition, so it compiles to one bounded in-workflow loop: the list stays in a Shortcuts variable and is never re-serialized between iterations.
+
+A list may be passed to another Longway function and returned from one. An argument travels as an array-typed field in the argument dictionary, which preserves it; a result returns through Stop and Output as a single attachment, the same way the Shortcuts editor writes a list variable.
+
+Lists also cannot nest — a list element may not itself be a list or a dictionary — and there is no `cons`, `append`, `map`, or `filter` yet.
+
+## Dictionaries
+
+`(dict ...)` builds a Shortcuts dictionary from alternating keys and values. Keys are text; values are untyped, just like list elements:
+
+```scheme
+(define (greeting)
+  (let ((person (dict "name" "Ada" "born" 1815)))
+    (dict-ref person "name")))
+```
+
+`dict-ref` reads one value, `dict-keys` and `dict-values` read all of them out as lists, and `dict-set` answers a new dictionary rather than changing the one it was given:
+
+```scheme
+(define (renamed)
+  (let ((person (dict "name" "Ada")))
+    (dict-ref (dict-set person "name" "Grace") "name")))
+```
+
+Because a read is untyped, the operation consuming it decides its type — `(- year (dict-ref person "born"))` reads `born` as a number.
+
+Unlike a list, a dictionary may hold a list or another dictionary, so records can nest:
+
+```scheme
+(define (record)
+  (dict "name" "Ada" "languages" (list "Analytical Engine")))
+```
+
+The one exception is `dict-set`, which cannot store a list or a dictionary; build those with `dict`.
+
+Dictionaries cross function calls in both directions, as arguments and as return values.
+
+Two sharp edges. Shortcuts treats `.` in a key as a path into nested content, so `(dict-ref d "a.b")` looks for `b` inside `a` rather than for a key literally named `a.b`. And there is no `dict-has-key?` yet — Shortcuts has no key-membership action, and the available workarounds are not safe to rely on until `dict-set`'s copy-versus-mutate behavior is confirmed on a device.
 
 ## Expressions and actions
 
@@ -122,6 +182,15 @@ Numeric comparisons accept at least two operands. Variadic comparisons test adja
 | `(if condition consequent alternative)` | Lazily select a value or action branch |
 | `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
 | `(not value)` | Boolean negation |
+| `(list a b …)` | Build a list |
+| `(length lst)` | Number of items |
+| `(list-ref lst index)` | Read an item by 0-based index |
+| `(first lst)`, `(last lst)` | Read the first or last item |
+| `(empty? lst)` | Test for a list with no items |
+| `(dict key value …)` | Build a dictionary from alternating keys and values |
+| `(dict-ref d key)` | Read one value by key |
+| `(dict-set d key value)` | Answer a new dictionary with `key` set |
+| `(dict-keys d)`, `(dict-values d)` | Read all keys or all values as a list |
 | `(show-result value)` | Show and return a value when used last |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
@@ -153,4 +222,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization, higher-order functions, macros, richer value types, and a larger action catalog remain future work.
+Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, dictionaries, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, `dict-has-key?` and dictionary removal, and a larger action catalog remain future work.

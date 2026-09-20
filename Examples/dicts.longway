@@ -1,0 +1,30 @@
+; Dictionaries are Shortcuts dictionaries: text keys over untyped values.
+(define (greeting)
+  (let ((person (dict "name" "Ada" "born" 1815)))
+    (show-result (dict-ref person "name"))))
+
+; Values are untyped, so the operation that reads one decides its type.
+(define (age-in year)
+  (let ((person (dict "name" "Ada" "born" 1815)))
+    (- year (dict-ref person "born"))))
+
+; dict-set answers a new dictionary rather than mutating its argument.
+(define (renamed)
+  (let ((person (dict "name" "Ada")))
+    (dict-ref (dict-set person "name" "Grace") "name")))
+
+; A dictionary may hold a list, and dict-keys and dict-values both read out
+; as lists, so the list operations apply to them.
+(define (field-count)
+  (let ((record (dict "name" "Ada" "languages" (list "Analytical Engine"))))
+    (length (dict-keys record))))
+
+; A dictionary crosses a function call in both directions.
+(define (label-of record)
+  (dict-ref record "name"))
+
+(define (make-record)
+  (dict "name" "Ada" "born" 1815))
+
+(define (report)
+  (show-result (label-of (make-record))))

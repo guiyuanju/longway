@@ -104,7 +104,7 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(actions.last?["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.output")
     }
 
-    func testRecursiveFunctionCallsItsStandaloneShortcut() throws {
+    func testSelfTailRecursiveFunctionCompilesToABoundedLoopNotRunWorkflow() throws {
         let result = try LongwayCompiler().compile("""
         (define (sum-to n acc)
           (if (= n 0)
@@ -119,14 +119,150 @@ final class LongwayCoreTests: XCTestCase {
             ["WFNumberContentItem"]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.runworkflow"))
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.dictionary"))
+
+        let repeatStart = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count"
+        })
+        let repeatParameters = try XCTUnwrap(repeatStart["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(repeatParameters["WFRepeatCount"] as? Int, tailCallLoopLimit)
+
+        let setVariableNames = actions.compactMap { action -> String? in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            else { return nil }
+            return parameters["WFVariableName"] as? String
+        }
+        XCTAssertTrue(setVariableNames.contains("n"))
+        XCTAssertTrue(setVariableNames.contains("acc"))
+        XCTAssertTrue(setVariableNames.contains("#result"))
+    }
+
+    func testBaseCaseStopsAndOutputsInsteadOfIdlingToTheLoopBound() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (sum-to n acc)
+          (if (= n 0)
+              acc
+              (sum-to (- n 1) (+ acc n))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.map { $0["WFWorkflowActionIdentifier"] as? String }
+
+        let resultAssignmentIndex = try XCTUnwrap(actions.firstIndex {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFVariableName"] as? String == "#result"
+        })
+        // The base case must Stop and Output right after recording its value, before
+        // the Otherwise branch (WFControlFlowMode 1) that starts the recursive step.
+        // A bare is.workflow.actions.exit would halt the workflow with no output.
+        let inlineOutputIndex = resultAssignmentIndex + 1
+        XCTAssertEqual(identifiers[inlineOutputIndex], "is.workflow.actions.output")
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.exit"))
+
+        let inlineOutput = try XCTUnwrap(actions[inlineOutputIndex]["WFWorkflowActionParameters"] as? [String: Any])
+        let wfOutput = try XCTUnwrap(inlineOutput["WFOutput"] as? [String: Any])
+        let value = try XCTUnwrap(wfOutput["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+        XCTAssertFalse(attachments.isEmpty, "base case must output its computed value, not an empty result")
+
+        // The post-loop read stays as the fail-safe for recursion that never
+        // reaches a base case, so there are exactly two output actions.
+        XCTAssertEqual(identifiers.filter { $0 == "is.workflow.actions.output" }.count, 2)
+    }
+
+    func testLoopVariableReadsAreMaterializedBeforeUseInAConditional() throws {
+        // A named-variable Get Variable read is runtime-generic to the Shortcuts
+        // editor, exactly like dictionary extraction: skip materializing it and the
+        // editor can't infer the condition's input type, rendering "is anything"
+        // instead of "is 0" even though the comparison still targets the right value.
+        let result = try LongwayCompiler().compile("""
+        (define (sum-to n acc)
+          (if (= n 0)
+              acc
+              (sum-to (- n 1) (+ acc n))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let comparison = try XCTUnwrap(actions.first {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFNumberValue"] as? Int == 0
+        })
+        let parameters = try XCTUnwrap(comparison["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let attachment = try XCTUnwrap(variable["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputName"] as? String, "Number")
+
+        let attachmentUUID = try XCTUnwrap(attachment["OutputUUID"] as? String)
+        let producer = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == attachmentUUID
+        })
+        XCTAssertEqual(producer["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.number")
+    }
+
+    func testNonTailSelfRecursionStillCallsItsStandaloneShortcut() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (count-up n)
+          (if (= n 0)
+              0
+              (+ 1 (count-up (- n 1)))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
         let recursiveRun = try XCTUnwrap(actions.first { action in
             guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow",
                   let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
             else { return false }
-            return parameters["WFWorkflowName"] as? String == "sum-to"
+            return parameters["WFWorkflowName"] as? String == "count-up"
         })
         let runParameters = try XCTUnwrap(recursiveRun["WFWorkflowActionParameters"] as? [String: Any])
-        XCTAssertEqual(runParameters["CustomOutputName"] as? String, "sum-to Result")
+        XCTAssertEqual(runParameters["CustomOutputName"] as? String, "count-up Result")
+    }
+
+    func testTailRecursionWithShowResultFallsBackToRunWorkflow() throws {
+        // show-result may only appear as a function's (or let's) literal tail form,
+        // never nested inside an if branch, so this is the only way a self-tail-call
+        // can coexist with show-result at all.
+        let result = try LongwayCompiler().compile("""
+        (define (count-down n)
+          (show-result (count-down (- n 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertTrue(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow" })
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
+    }
+
+    func testTailRecursionWithLeadingSideEffectFallsBackToRunWorkflow() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (count-down n)
+          (notification "tick")
+          (if (= n 0)
+              0
+              (count-down (- n 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertTrue(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow" })
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
     }
 
     func testMutuallyRecursiveFunctionsCompile() throws {
@@ -592,6 +728,56 @@ final class LongwayCoreTests: XCTestCase {
         )
     }
 
+    func testEqualityAgainstAVariableSubtractsAndTestsAgainstLiteralZero() throws {
+        // Shortcuts' `is` condition on a Number input has no variable slot: the
+        // editor only accepts a typed number, so WFConditionalActionString is
+        // never read and the condition silently never matches. Comparing the
+        // difference against a literal zero is the shape that does work.
+        let result = try LongwayCompiler().compile("""
+        (define (same a b)
+          (= a b))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let comparison = try XCTUnwrap(actions.first {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFControlFlowMode"] as? Int == 0
+        })
+        let parameters = try XCTUnwrap(comparison["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(parameters["WFCondition"] as? Int, 4)
+        XCTAssertEqual(parameters["WFNumberValue"] as? Double, 0)
+        XCTAssertNil(parameters["WFConditionalActionString"])
+
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let inputValue = try XCTUnwrap(variable["Value"] as? [String: Any])
+        let inputUUID = try XCTUnwrap(inputValue["OutputUUID"] as? String)
+
+        let math = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == inputUUID
+        })
+        XCTAssertEqual(math["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.math")
+        let mathParameters = try XCTUnwrap(math["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(mathParameters["WFMathOperation"] as? String, "-")
+
+        // Both operands reach the subtraction: a as the input, b as the operand.
+        let operand = try XCTUnwrap(mathParameters["WFMathOperand"] as? [String: Any])
+        let operandValue = try XCTUnwrap(operand["Value"] as? [String: Any])
+        XCTAssertEqual(operandValue["Type"] as? String, "ActionOutput")
+        let mathInput = try XCTUnwrap(mathParameters["WFInput"] as? [String: Any])
+        let mathInputValue = try XCTUnwrap(mathInput["Value"] as? [String: Any])
+        XCTAssertEqual(mathInputValue["Type"] as? String, "ActionOutput")
+        XCTAssertNotEqual(
+            mathInputValue["OutputUUID"] as? String,
+            operandValue["OutputUUID"] as? String
+        )
+    }
+
     func testNumericComparisonLowersToShortcutCondition() throws {
         let result = try LongwayCompiler().compile("""
         (define (test)
@@ -643,27 +829,30 @@ final class LongwayCoreTests: XCTestCase {
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
-        let xParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
-        let yParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
-        let xUUID = try XCTUnwrap(xParameters["UUID"] as? String)
-        let yUUID = try XCTUnwrap(yParameters["UUID"] as? String)
+        let xUUID = try XCTUnwrap((actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String)
+        let yUUID = try XCTUnwrap((actions[1]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String)
 
-        let outer = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        // x < y compares x - y against zero, because a number condition has no
+        // variable slot; y < 3 keeps the literal in the number field.
+        let difference = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(actions[2]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.math")
+        XCTAssertEqual(difference["WFMathOperation"] as? String, "-")
+        let differenceInput = try XCTUnwrap(difference["WFInput"] as? [String: Any])
+        XCTAssertEqual((differenceInput["Value"] as? [String: Any])?["OutputUUID"] as? String, xUUID)
+        let differenceOperand = try XCTUnwrap(difference["WFMathOperand"] as? [String: Any])
+        XCTAssertEqual((differenceOperand["Value"] as? [String: Any])?["OutputUUID"] as? String, yUUID)
+        let differenceUUID = try XCTUnwrap(difference["UUID"] as? String)
+
+        let outer = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(outer["WFCondition"] as? Int, 0)
+        XCTAssertEqual(outer["WFNumberValue"] as? Double, 0)
+        XCTAssertNil(outer["WFConditionalActionString"])
         let outerInput = try XCTUnwrap(outer["WFInput"] as? [String: Any])
         let outerVariable = try XCTUnwrap(outerInput["Variable"] as? [String: Any])
         let outerValue = try XCTUnwrap(outerVariable["Value"] as? [String: Any])
-        XCTAssertEqual(outerValue["OutputUUID"] as? String, xUUID)
-        let outerRight = try XCTUnwrap(outer["WFConditionalActionString"] as? [String: Any])
-        let outerRightValue = try XCTUnwrap(outerRight["Value"] as? [String: Any])
-        let outerRightAttachments = try XCTUnwrap(
-            outerRightValue["attachmentsByRange"] as? [String: Any]
-        )
-        XCTAssertEqual(
-            (outerRightAttachments["{0, 1}"] as? [String: Any])?["OutputUUID"] as? String,
-            yUUID
-        )
+        XCTAssertEqual(outerValue["OutputUUID"] as? String, differenceUUID)
 
-        let inner = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
+        let inner = try XCTUnwrap(actions[4]["WFWorkflowActionParameters"] as? [String: Any])
         let innerInput = try XCTUnwrap(inner["WFInput"] as? [String: Any])
         let innerVariable = try XCTUnwrap(innerInput["Variable"] as? [String: Any])
         let innerValue = try XCTUnwrap(innerVariable["Value"] as? [String: Any])
@@ -924,6 +1113,603 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertEqual(tokens[2].kind, .string("a\tb\"c"))
         XCTAssertEqual(tokens[3].kind, .boolean(true))
         XCTAssertEqual(tokens[4].kind, .number(2.5))
+    }
+
+    func testListLiteralLowersToAListActionWithTypedItems() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (names)
+          (list "Ada" 42 #t))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.list",
+            "is.workflow.actions.output"
+        ])
+
+        // WFItems is a content array: Apple's own shortcuts store a literal item as
+        // a plain string. Wrapping items in WFItemType/WFValue pairs, as a Dictionary
+        // action's fields are, makes Shortcuts read the whole array as one item.
+        let parameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        let items = try XCTUnwrap(parameters["WFItems"] as? [Any])
+        XCTAssertEqual(items as? [String], ["Ada", "42", "#t"])
+
+        // A list has no dedicated Shortcut content class, so it exports the
+        // generic set rather than claiming to be text or a number.
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFStringContentItem", "WFNumberContentItem", "WFGenericFileContentItem"]
+        )
+    }
+
+    func testListItemReferencingAnotherActionKeepsItsAttachment() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (pair x)
+          (list x "fixed"))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let list = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.list"
+        })
+        let parameters = try XCTUnwrap(list["WFWorkflowActionParameters"] as? [String: Any])
+        let items = try XCTUnwrap(parameters["WFItems"] as? [Any])
+        XCTAssertEqual(items.count, 2)
+
+        let reference = try XCTUnwrap(items.first as? [String: Any])
+        XCTAssertEqual(reference["WFSerializationType"] as? String, "WFTextTokenString")
+        let value = try XCTUnwrap(reference["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+        let attachment = try XCTUnwrap(attachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputName"] as? String, "x")
+        XCTAssertEqual(items.last as? String, "fixed")
+    }
+
+    func testListAccessorsLowerToShortcutListActions() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (head) (first (list 1 2)))
+        (define (tail-item) (last (list 1 2)))
+        (define (size) (length (list 1 2)))
+        (define (second) (list-ref (list 1 2) 1))
+        """)
+
+        var specifiers: [String: String] = [:]
+        for shortcut in program.shortcuts {
+            let propertyList = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: shortcut.data, format: nil) as? [String: Any]
+            )
+            let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+            let listUUID = try XCTUnwrap(
+                (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+            )
+            let reader = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+            let inputKey = shortcut.name == "size" ? "Input" : "WFInput"
+            let input = try XCTUnwrap(reader[inputKey] as? [String: Any])
+            let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+            XCTAssertEqual(inputValue["OutputUUID"] as? String, listUUID)
+
+            if shortcut.name == "size" {
+                XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.count")
+                XCTAssertEqual(reader["WFCountType"] as? String, "Items")
+                XCTAssertNil(reader["WFInput"], "the Count action reads its input from Input, not WFInput")
+                XCTAssertEqual(
+                    propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+                    ["WFNumberContentItem"]
+                )
+                continue
+            }
+            XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.getitemfromlist")
+            specifiers[shortcut.name] = reader["WFItemSpecifier"] as? String
+            if shortcut.name == "second" {
+                // Longway indexes from 0 like Scheme's list-ref; Shortcuts indexes from 1.
+                XCTAssertEqual(reader["WFItemIndex"] as? Int, 2)
+            }
+        }
+        XCTAssertEqual(specifiers, [
+            "head": "First Item",
+            "tail-item": "Last Item",
+            "second": "Item At Index"
+        ])
+    }
+
+    func testComputedListIndexIsOffsetByAMathAction() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (item-at items index)
+          (list-ref items index))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let reader = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.getitemfromlist"
+        })
+        let parameters = try XCTUnwrap(reader["WFWorkflowActionParameters"] as? [String: Any])
+        let index = try XCTUnwrap(parameters["WFItemIndex"] as? [String: Any])
+        let indexValue = try XCTUnwrap(index["Value"] as? [String: Any])
+        let indexUUID = try XCTUnwrap(indexValue["OutputUUID"] as? String)
+
+        let math = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == indexUUID
+        })
+        XCTAssertEqual(math["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.math")
+        let mathParameters = try XCTUnwrap(math["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(mathParameters["WFMathOperation"] as? String, "+")
+        XCTAssertEqual(mathParameters["WFMathOperand"] as? Int, 1)
+    }
+
+    func testEmptyComparesTheItemCountToZero() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (none) (empty? (list 1)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFStringContentItem"]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let count = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.count"
+        })
+        let countUUID = try XCTUnwrap(
+            (count["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let condition = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional"
+        })
+        let parameters = try XCTUnwrap(condition["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(parameters["WFCondition"] as? Int, 4)
+        XCTAssertEqual(parameters["WFNumberValue"] as? Int, 0)
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let attachment = try XCTUnwrap(variable["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputUUID"] as? String, countUUID)
+    }
+
+    func testListsCrossLoopVariablesThroughGetVariableWithoutCoercion() throws {
+        // Passing a list through Text or Number would flatten it, so a list written
+        // to a tail-call loop variable goes through Get Variable instead.
+        let result = try LongwayCompiler().compile("""
+        (define (sum-list items index total)
+          (if (= index (length items))
+              total
+              (sum-list items (+ index 1) (+ total (list-ref items index)))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.map { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.repeat.count"))
+
+        let itemsWrites = actions.enumerated().filter { _, action in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable",
+                  let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFVariableName"] as? String == "items"
+        }
+        XCTAssertEqual(itemsWrites.count, 2, "the list is seeded once and rewritten once per iteration")
+        for (_, write) in itemsWrites {
+            let parameters = try XCTUnwrap(write["WFWorkflowActionParameters"] as? [String: Any])
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let value = try XCTUnwrap(input["Value"] as? [String: Any])
+            let sourceUUID = try XCTUnwrap(value["OutputUUID"] as? String)
+            let producer = try XCTUnwrap(actions.first {
+                ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == sourceUUID
+            })
+            XCTAssertEqual(producer["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.getvariable")
+        }
+    }
+
+    func testListsInferParameterAndReturnTypesAcrossFunctions() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (size items) (length items))
+        (define (main) (length (list 1 2 3)))
+        """)
+        XCTAssertEqual(program.shortcuts.map(\.name), ["size", "main"])
+
+        let sizePropertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[0].data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(
+            sizePropertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFNumberContentItem"]
+        )
+
+        XCTAssertThrowsError(try LongwayCompiler().compileProgram("""
+        (define (size items) (length items))
+        (define (main) (size 7))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "size argument 1 has incompatible type")
+        }
+    }
+
+    func testListArgumentRidesInAnArrayTypedDictionaryField() throws {
+        // A plain text field would flatten the list to newline-joined text, which
+        // reads back as a single item. Shortcuts types an array field as
+        // WFItemType 2 and wraps the variable in WFArraySubstitutableParameterState.
+        let program = try LongwayCompiler().compileProgram("""
+        (define (size items) (length items))
+        (define (main) (size (list 1 2 3)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let list = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.list"
+        })
+        let listUUID = try XCTUnwrap(
+            (list["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+
+        let dictionary = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.dictionary"
+        })
+        let parameters = try XCTUnwrap(dictionary["WFWorkflowActionParameters"] as? [String: Any])
+        let fields = try XCTUnwrap(parameters["WFItems"] as? [String: Any])
+        let fieldValue = try XCTUnwrap(fields["Value"] as? [String: Any])
+        let items = try XCTUnwrap(fieldValue["WFDictionaryFieldValueItems"] as? [[String: Any]])
+        let item = try XCTUnwrap(items.first)
+        XCTAssertEqual(item["WFItemType"] as? Int, 2)
+
+        let value = try XCTUnwrap(item["WFValue"] as? [String: Any])
+        XCTAssertEqual(value["WFSerializationType"] as? String, "WFArraySubstitutableParameterState")
+        let attachment = try XCTUnwrap(value["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["WFSerializationType"] as? String, "WFTextTokenAttachment")
+        let reference = try XCTUnwrap(attachment["Value"] as? [String: Any])
+        XCTAssertEqual(reference["OutputUUID"] as? String, listUUID)
+    }
+
+    func testListResultReturnsAsASingleAttachmentTokenAndCanBeCalled() throws {
+        // The Shortcuts editor writes a List variable into Stop and Output as one
+        // attachment filling the whole token string, which is what every other
+        // output here already uses, so a list result needs no special encoding.
+        let program = try LongwayCompiler().compileProgram("""
+        (define (make) (list 1 2 3))
+        (define (main) (first (make)))
+        """)
+        let makePropertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[0].data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(
+            makePropertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFStringContentItem", "WFNumberContentItem", "WFGenericFileContentItem"]
+        )
+        let makeActions = try XCTUnwrap(makePropertyList["WFWorkflowActions"] as? [[String: Any]])
+        let listUUID = try XCTUnwrap(
+            (makeActions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let output = try XCTUnwrap(makeActions.last?["WFWorkflowActionParameters"] as? [String: Any])
+        let outputValue = try XCTUnwrap(output["WFOutput"] as? [String: Any])
+        XCTAssertEqual(outputValue["WFSerializationType"] as? String, "WFTextTokenString")
+        let token = try XCTUnwrap(outputValue["Value"] as? [String: Any])
+        XCTAssertEqual(token["string"] as? String, "\u{FFFC}")
+        let attachments = try XCTUnwrap(token["attachmentsByRange"] as? [String: Any])
+        let attachment = try XCTUnwrap(attachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(attachment["OutputUUID"] as? String, listUUID)
+
+        // The caller reads that result straight into a list operation.
+        let mainActions = try XCTUnwrap(
+            (PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any])?["WFWorkflowActions"] as? [[String: Any]]
+        )
+        let run = try XCTUnwrap(mainActions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.runworkflow"
+        })
+        let runParameters = try XCTUnwrap(run["WFWorkflowActionParameters"] as? [String: Any])
+        let runUUID = try XCTUnwrap(runParameters["UUID"] as? String)
+        let reader = try XCTUnwrap(mainActions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.getitemfromlist"
+        })
+        let readerParameters = try XCTUnwrap(reader["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(readerParameters["WFInput"] as? [String: Any])
+        let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+        XCTAssertEqual(inputValue["OutputUUID"] as? String, runUUID)
+    }
+
+    func testListFormsValidateOperandTypesAndArity() throws {
+        let cases: [(String, String)] = [
+            ("(define (main) (length 7))", "length expects a list"),
+            ("(define (main) (first \"text\"))", "first expects a list"),
+            ("(define (main) (empty? #t))", "empty? expects a list"),
+            ("(define (main) (list-ref (list 1) \"one\"))", "list-ref expects a number index"),
+            ("(define (main) (list-ref (list 1)))", "list-ref expects 2 arguments, got 1"),
+            ("(define (main) (length (list 1) (list 2)))", "length expects 1 argument, got 2"),
+            ("(define (main) (list (list 1)))", "list elements cannot be lists"),
+            ("(define (main) (+ (list 1) 2))", "+ expects number operands"),
+            ("(define (main) (list-ref (list 1) -1))", "list-ref index must be a whole number that is not negative"),
+            ("(define (main) (list-ref (list 1) 1.5))", "list-ref index must be a whole number that is not negative")
+        ]
+        for (source, message) in cases {
+            XCTAssertThrowsError(try LongwayCompiler().compile(source), source) { error in
+                XCTAssertEqual((error as? LongwayError)?.message, message, source)
+            }
+        }
+    }
+
+    func testListNamesAreReservedForBuiltinForms() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (list a) a)
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name 'list' is reserved")
+        }
+    }
+
+    func testDictionaryLiteralLowersToADictionaryActionWithTypedFields() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (person)
+          (dict "name" "Ada" "born" 1815))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.dictionary",
+            "is.workflow.actions.output"
+        ])
+
+        let items = try XCTUnwrap(dictionaryFieldItems(in: actions[0]))
+        XCTAssertEqual(items.compactMap { $0["WFItemType"] as? Int }, [0, 3])
+        XCTAssertEqual(items.compactMap { textTokenLiteral($0["WFKey"]) }, ["name", "born"])
+        XCTAssertEqual(items.compactMap { textTokenLiteral($0["WFValue"]) }, ["Ada", "1815"])
+
+        // Unlike a list, a dictionary has its own Shortcut content class.
+        XCTAssertEqual(
+            propertyList["WFWorkflowOutputContentItemClasses"] as? [String],
+            ["WFDictionaryContentItem"]
+        )
+    }
+
+    func testDictionaryReadsLowerToGetDictionaryValue() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (value) (dict-ref (dict "name" "Ada") "name"))
+        (define (keys) (dict-keys (dict "name" "Ada")))
+        (define (values) (dict-values (dict "name" "Ada")))
+        """)
+
+        var valueTypes: [String: String] = [:]
+        for shortcut in program.shortcuts {
+            let propertyList = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: shortcut.data, format: nil) as? [String: Any]
+            )
+            let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+            let dictionaryUUID = try XCTUnwrap(
+                (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+            )
+            XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.getvalueforkey")
+            let parameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+            valueTypes[shortcut.name] = parameters["WFGetDictionaryValueType"] as? String
+
+            // The read must reference the Dictionary action that produced it.
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+            XCTAssertEqual(inputValue["OutputUUID"] as? String, dictionaryUUID)
+        }
+        XCTAssertEqual(valueTypes, ["value": "Value", "keys": "All Keys", "values": "All Values"])
+    }
+
+    func testDictionaryKeyIsABareStringForALiteralAndATokenForAComputedKey() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (fixed) (dict-ref (dict "name" "Ada") "name"))
+        (define (computed key) (dict-ref (dict "name" "Ada") key))
+        """)
+
+        // Apple's own shortcuts write a literal key as a bare string.
+        let fixed = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[0].data, format: nil) as? [String: Any]
+        )
+        let fixedActions = try XCTUnwrap(fixed["WFWorkflowActions"] as? [[String: Any]])
+        let fixedRead = try XCTUnwrap(fixedActions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(fixedRead["WFDictionaryKey"] as? String, "name")
+
+        // A computed key needs the attachment-bearing token string instead.
+        let computed = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let computedActions = try XCTUnwrap(computed["WFWorkflowActions"] as? [[String: Any]])
+        // The parameter extraction that reads `key` off Shortcut Input is a
+        // Get Dictionary Value too; the dict-ref is the last one.
+        let read = try XCTUnwrap(computedActions.last {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.getvalueforkey"
+        })
+        let parameters = try XCTUnwrap(read["WFWorkflowActionParameters"] as? [String: Any])
+        let key = try XCTUnwrap(parameters["WFDictionaryKey"] as? [String: Any])
+        XCTAssertEqual(key["WFSerializationType"] as? String, "WFTextTokenString")
+        let keyValue = try XCTUnwrap(key["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(keyValue["attachmentsByRange"] as? [String: Any])
+        XCTAssertNotNil(attachments["{0, 1}"])
+    }
+
+    func testDictionarySetDerivesANewDictionaryFromTheOldOne() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (renamed)
+          (dict-ref (dict-set (dict "name" "Ada") "name" "Grace") "name"))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.dictionary",
+            "is.workflow.actions.setvalueforkey",
+            "is.workflow.actions.getvalueforkey",
+            "is.workflow.actions.output"
+        ])
+
+        let dictionaryUUID = try XCTUnwrap(
+            (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let setParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        // Set Dictionary Value names its input WFDictionary, not the WFInput
+        // its Get counterpart uses.
+        XCTAssertNil(setParameters["WFInput"])
+        let target = try XCTUnwrap(setParameters["WFDictionary"] as? [String: Any])
+        let targetValue = try XCTUnwrap(target["Value"] as? [String: Any])
+        XCTAssertEqual(targetValue["OutputUUID"] as? String, dictionaryUUID)
+        XCTAssertEqual(setParameters["WFDictionaryKey"] as? String, "name")
+        XCTAssertEqual(textTokenLiteral(setParameters["WFDictionaryValue"]), "Grace")
+
+        // The read sees the updated dictionary, not the one dict built.
+        let setUUID = try XCTUnwrap(setParameters["UUID"] as? String)
+        let readParameters = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let input = try XCTUnwrap(readParameters["WFInput"] as? [String: Any])
+        let inputValue = try XCTUnwrap(input["Value"] as? [String: Any])
+        XCTAssertEqual(inputValue["OutputUUID"] as? String, setUUID)
+    }
+
+    func testDictionaryFieldCarriesNestedListsAndDictionaries() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (inner) (dict "name" "Ada"))
+        (define (record)
+          (dict "languages" (list "Analytical Engine") "person" (inner)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let build = try XCTUnwrap(actions.last { action in
+            action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.dictionary"
+        })
+        let items = try XCTUnwrap(dictionaryFieldItems(in: build))
+
+        // WorkflowKit numbers these item types 1 dictionary and 2 array, and
+        // substitutes a whole-field variable through the matching state class.
+        // A text field would flatten the list to newline-joined text and the
+        // dictionary to JSON.
+        XCTAssertEqual(items.compactMap { $0["WFItemType"] as? Int }, [2, 1])
+        let list = try XCTUnwrap(items[0]["WFValue"] as? [String: Any])
+        XCTAssertEqual(list["WFSerializationType"] as? String, "WFArraySubstitutableParameterState")
+        let nested = try XCTUnwrap(items[1]["WFValue"] as? [String: Any])
+        XCTAssertEqual(nested["WFSerializationType"] as? String, "WFDictionarySubstitutableParameterState")
+    }
+
+    func testDictionaryCrossesAFunctionCallAsADictionaryTypedArgument() throws {
+        let program = try LongwayCompiler().compileProgram("""
+        (define (label-of record) (dict-ref record "name"))
+        (define (main) (label-of (dict "name" "Ada")))
+        """)
+
+        // The callee's parameter is inferred as a dictionary, so the caller
+        // must hand it over through the dictionary-typed field rather than
+        // through a text field that would flatten it to JSON.
+        let caller = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: program.shortcuts[1].data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(caller["WFWorkflowActions"] as? [[String: Any]])
+        let build = try XCTUnwrap(actions.first)
+        let buildUUID = try XCTUnwrap(
+            (build["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let arguments = try XCTUnwrap(actions.first { action in
+            (action["WFWorkflowActionParameters"] as? [String: Any])?["CustomOutputName"] as? String == "Arguments"
+        })
+        let items = try XCTUnwrap(dictionaryFieldItems(in: arguments))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0]["WFItemType"] as? Int, 1)
+        XCTAssertEqual(textTokenLiteral(items[0]["WFKey"]), "record")
+
+        let value = try XCTUnwrap(items[0]["WFValue"] as? [String: Any])
+        XCTAssertEqual(value["WFSerializationType"] as? String, "WFDictionarySubstitutableParameterState")
+        let attachment = try XCTUnwrap(value["Value"] as? [String: Any])
+        XCTAssertEqual(attachment["WFSerializationType"] as? String, "WFTextTokenAttachment")
+        let reference = try XCTUnwrap(attachment["Value"] as? [String: Any])
+        XCTAssertEqual(reference["OutputUUID"] as? String, buildUUID)
+    }
+
+    func testDictionaryPassesThroughGetVariableRatherThanText() throws {
+        // Text or Number would flatten a dictionary to JSON, so a dictionary
+        // written to a tail-call loop variable goes through Get Variable.
+        let result = try LongwayCompiler().compile("""
+        (define (walk record index)
+          (if (= index 0)
+              (dict-ref record "name")
+              (walk record (- index 1))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.repeat.count"))
+
+        let recordWrites = actions.filter { action in
+            guard action["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.setvariable" else {
+                return false
+            }
+            let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+            return parameters?["WFVariableName"] as? String == "record"
+        }
+        XCTAssertEqual(recordWrites.count, 2, "the dictionary is seeded once and rewritten once per iteration")
+
+        // Every value published for the loop variable must come from a
+        // Get Variable passthrough, never from a Text or Number action.
+        for write in recordWrites {
+            let parameters = try XCTUnwrap(write["WFWorkflowActionParameters"] as? [String: Any])
+            let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+            let value = try XCTUnwrap(input["Value"] as? [String: Any])
+            let uuid = try XCTUnwrap(value["OutputUUID"] as? String)
+            let producer = try XCTUnwrap(actions.first { action in
+                (action["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == uuid
+            })
+            XCTAssertEqual(
+                producer["WFWorkflowActionIdentifier"] as? String,
+                "is.workflow.actions.getvariable"
+            )
+        }
+    }
+
+    func testDictionaryFormsValidateOperandTypesAndArity() throws {
+        let cases: [(String, String)] = [
+            ("(define (main) (dict-ref 7 \"k\"))", "dict-ref expects a dictionary"),
+            ("(define (main) (dict-keys \"text\"))", "dict-keys expects a dictionary"),
+            ("(define (main) (dict-values (list 1)))", "dict-values expects a dictionary"),
+            ("(define (main) (dict-ref (dict \"k\" 1) 2))", "dict-ref expects a text key"),
+            ("(define (main) (dict \"k\"))", "dict expects alternating keys and values, got 1 forms"),
+            ("(define (main) (dict 1 2))", "dict expects a text key"),
+            ("(define (main) (dict \"k\" 1 \"k\" 2))", "duplicate dict key 'k'"),
+            ("(define (main) (dict-ref (dict \"k\" 1)))", "dict-ref expects 2 arguments, got 1"),
+            ("(define (main) (dict-keys (dict \"k\" 1) (dict \"j\" 2)))", "dict-keys expects 1 argument, got 2"),
+            ("(define (main) (dict-set (dict \"k\" 1) \"k\"))", "dict-set expects 3 arguments, got 2"),
+            (
+                "(define (main) (dict-set (dict \"k\" 1) \"k\" (list 1)))",
+                "dict-set cannot store lists; build the dictionary with dict instead"
+            ),
+            (
+                "(define (main) (dict-set (dict \"k\" 1) \"k\" (dict \"j\" 2)))",
+                "dict-set cannot store dictionaries; build the dictionary with dict instead"
+            ),
+            ("(define (main) (list (dict \"k\" 1)))", "list elements cannot be dictionaries"),
+            ("(define (main) (+ (dict \"k\" 1) 2))", "+ expects number operands")
+        ]
+        for (source, message) in cases {
+            XCTAssertThrowsError(try LongwayCompiler().compile(source), source) { error in
+                XCTAssertEqual((error as? LongwayError)?.message, message, source)
+            }
+        }
+    }
+
+    func testDictionaryNamesAreReservedForBuiltinForms() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (dict-ref a) a)
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name 'dict-ref' is reserved")
+        }
+    }
+
+    private func dictionaryFieldItems(in action: [String: Any]) -> [[String: Any]]? {
+        let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
+        let items = parameters?["WFItems"] as? [String: Any]
+        let value = items?["Value"] as? [String: Any]
+        return value?["WFDictionaryFieldValueItems"] as? [[String: Any]]
     }
 
     private func textLiteral(in action: [String: Any]) -> String? {
