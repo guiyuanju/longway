@@ -95,7 +95,9 @@ struct DefinitionParser {
             "define", "let", "if", "+", "-", "*", "/", "=", "<", "<=", ">", ">=",
             "and", "or", "not", "show-result", "notification", "open-url", "wait",
             "list", "length", "list-ref", "first", "last", "empty?",
-            "dict", "dict-ref", "dict-set", "dict-keys", "dict-values"
+            "dict", "dict-ref", "dict-set", "dict-keys", "dict-values",
+            "string-append", "number->text", "split-lines", "split-whitespace", "split-text",
+            "choose-from-list", "ask-text", "ask-number", "format-current-date"
         ]
     }
 }

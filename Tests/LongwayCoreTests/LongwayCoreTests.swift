@@ -265,6 +265,24 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
     }
 
+    func testTailRecursionWithInteractiveInitializerFallsBackToRunWorkflow() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (retry n)
+          (if (= n 0)
+              "done"
+              (let ((answer (ask-text "Continue?")))
+                (retry (- n 1)))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.ask"))
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.runworkflow"))
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.repeat.count"))
+    }
+
     func testMutuallyRecursiveFunctionsCompile() throws {
         let program = try LongwayCompiler().compileProgram("""
         (define (even n)
@@ -1702,6 +1720,118 @@ final class LongwayCoreTests: XCTestCase {
         (define (dict-ref a) a)
         """)) { error in
             XCTAssertEqual((error as? LongwayError)?.message, "function name 'dict-ref' is reserved")
+        }
+    }
+
+    func testDynamicTextBuildsOneTokenStringWithUTF16AttachmentRanges() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (entry name amount)
+          (string-append "💰: " name " " (number->text amount)))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let textActions = actions.filter {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.gettext"
+        }
+        XCTAssertEqual(textActions.count, 2)
+
+        let finalParameters = try XCTUnwrap(textActions.last?["WFWorkflowActionParameters"] as? [String: Any])
+        let token = try XCTUnwrap(finalParameters["WFTextActionText"] as? [String: Any])
+        let value = try XCTUnwrap(token["Value"] as? [String: Any])
+        XCTAssertEqual(value["string"] as? String, "💰: \u{FFFC} \u{FFFC}")
+        let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+        XCTAssertNotNil(attachments["{4, 1}"], "emoji occupies two UTF-16 code units")
+        XCTAssertNotNil(attachments["{6, 1}"])
+    }
+
+    func testTextSplittingAndInteractiveChoiceUseClipboardConfirmedShapes() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (choose-account)
+          (let ((menu (split-lines "Cash | Assets:Cash USD\\nCard | Liabilities:Card USD")))
+            (split-whitespace
+              (last (split-text (choose-from-list menu "Account") " | ")))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let splitActions = actions.filter {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.text.split"
+        }
+        XCTAssertEqual(splitActions.count, 3)
+
+        let lineParameters = try XCTUnwrap(splitActions[0]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertNil(lineParameters["WFTextSeparator"])
+        let customParameters = try XCTUnwrap(splitActions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(customParameters["WFTextSeparator"] as? String, "Custom")
+        XCTAssertEqual(customParameters["WFTextCustomSeparator"] as? String, " | ")
+        let spaceParameters = try XCTUnwrap(splitActions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(spaceParameters["WFTextSeparator"] as? String, "Spaces")
+
+        let chooser = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.choosefromlist"
+        })
+        let chooserParameters = try XCTUnwrap(chooser["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(chooserParameters["WFChooseFromListActionPrompt"] as? String, "Account")
+        XCTAssertNotNil(chooserParameters["WFInput"] as? [String: Any])
+    }
+
+    func testAskAndCurrentDateFormattingUseTypedParameters() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (entry)
+          (let ((amount (ask-number "Amount")))
+            (let ((payee (ask-text "Payee")))
+              (let ((date (format-current-date "yyyy-MM-dd")))
+                (string-append date " " payee " " (number->text amount))))))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let asks = actions.filter { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.ask" }
+        XCTAssertEqual(asks.count, 2)
+        let numberParameters = try XCTUnwrap(asks[0]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(numberParameters["WFAskActionPrompt"] as? String, "Amount")
+        XCTAssertEqual(numberParameters["WFInputType"] as? String, "Number")
+        let textParameters = try XCTUnwrap(asks[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(textParameters["WFAskActionPrompt"] as? String, "Payee")
+        XCTAssertNil(textParameters["WFInputType"])
+
+        let dateAction = try XCTUnwrap(actions.first {
+            $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.format.date"
+        })
+        let dateParameters = try XCTUnwrap(dateAction["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(dateParameters["WFDateFormatStyle"] as? String, "Custom")
+        XCTAssertEqual(dateParameters["WFDateFormat"] as? String, "yyyy-MM-dd")
+        let date = try XCTUnwrap(dateParameters["WFDate"] as? [String: Any])
+        let dateValue = try XCTUnwrap(date["Value"] as? [String: Any])
+        let dateAttachments = try XCTUnwrap(dateValue["attachmentsByRange"] as? [String: Any])
+        let currentDate = try XCTUnwrap(dateAttachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(currentDate["Type"] as? String, "CurrentDate")
+    }
+
+    func testTextAndInputFormsValidateTypesAndLiteralParameters() throws {
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad) (string-append "amount" 1))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "string-append expects text operands")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad separator) (split-text "a,b" separator))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "split-text separator must be a string literal")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad prompt) (ask-text prompt))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "ask-text prompt must be a string literal")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad) (choose-from-list "not a list" "Pick"))
+        """)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "choose-from-list expects a list")
         }
     }
 

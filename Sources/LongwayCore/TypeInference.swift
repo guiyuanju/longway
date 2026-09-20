@@ -346,6 +346,101 @@ struct SignatureInferrer {
         return inference.makeVariable(boundTo: .dictionary)
     }
 
+    private func inferTextOperation(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: InferenceEnvironment,
+        inference: TypeInference
+    ) throws -> Int {
+        switch operation {
+        case "string-append":
+            for operand in operands {
+                let value = try inferValue(operand, environment: environment, inference: inference)
+                try inference.constrain(
+                    value,
+                    to: .text,
+                    message: "string-append expects text operands",
+                    at: operand.location
+                )
+            }
+        case "number->text":
+            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
+            let value = try inferValue(operands[0], environment: environment, inference: inference)
+            try inference.constrain(
+                value,
+                to: .number,
+                message: "number->text expects a number",
+                at: operands[0].location
+            )
+        case "split-lines", "split-whitespace":
+            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
+            let value = try inferValue(operands[0], environment: environment, inference: inference)
+            try inference.constrain(
+                value,
+                to: .text,
+                message: "\(operation) expects text",
+                at: operands[0].location
+            )
+            return inference.makeVariable(boundTo: .list)
+        case "split-text":
+            try requireArgumentCount(2, action: operation, arguments: operands, at: location)
+            for operand in operands {
+                let value = try inferValue(operand, environment: environment, inference: inference)
+                try inference.constrain(
+                    value,
+                    to: .text,
+                    message: "split-text expects text operands",
+                    at: operand.location
+                )
+            }
+            return inference.makeVariable(boundTo: .list)
+        default:
+            preconditionFailure("unknown text operation")
+        }
+        return inference.makeVariable(boundTo: .text)
+    }
+
+    private func inferInteractiveOperation(
+        _ operation: String,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: InferenceEnvironment,
+        inference: TypeInference
+    ) throws -> Int {
+        switch operation {
+        case "choose-from-list":
+            try requireArgumentCount(2, action: operation, arguments: operands, at: location)
+            let list = try inferValue(operands[0], environment: environment, inference: inference)
+            try inference.constrain(
+                list,
+                to: .list,
+                message: "choose-from-list expects a list",
+                at: operands[0].location
+            )
+            let prompt = try inferValue(operands[1], environment: environment, inference: inference)
+            try inference.constrain(
+                prompt,
+                to: .text,
+                message: "choose-from-list expects a text prompt",
+                at: operands[1].location
+            )
+            return inference.makeVariable()
+        case "ask-text", "ask-number", "format-current-date":
+            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
+            let text = try inferValue(operands[0], environment: environment, inference: inference)
+            try inference.constrain(
+                text,
+                to: .text,
+                message: "\(operation) expects text",
+                at: operands[0].location
+            )
+            return inference.makeVariable(boundTo: operation == "ask-number" ? .number : .text)
+        default:
+            preconditionFailure("unknown interactive operation")
+        }
+    }
+
     private func inferValue(
         _ expression: Expression,
         environment: InferenceEnvironment,
@@ -426,6 +521,24 @@ struct SignatureInferrer {
             }
             if dictionaryOperations.contains(operation) {
                 return try inferDictionaryOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment,
+                    inference: inference
+                )
+            }
+            if textOperations.contains(operation) {
+                return try inferTextOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment,
+                    inference: inference
+                )
+            }
+            if interactiveOperations.contains(operation) {
+                return try inferInteractiveOperation(
                     operation,
                     operands: operands,
                     at: expression.location,

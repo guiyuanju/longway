@@ -158,6 +158,37 @@ Dictionaries cross function calls in both directions, as arguments and as return
 
 Two sharp edges. Shortcuts treats `.` in a key as a path into nested content, so `(dict-ref d "a.b")` looks for `b` inside `a` rather than for a key literally named `a.b`. And there is no `dict-has-key?` yet — Shortcuts has no key-membership action, and the available workarounds are not safe to rely on until `dict-set`'s copy-versus-mutate behavior is confirmed on a device.
 
+## Text and interactive input
+
+`string-append` combines text values into one Shortcuts Text action. Convert a number explicitly with `number->text`:
+
+```scheme
+(define (receipt name amount)
+  (string-append "Paid " (number->text amount) " to " name))
+```
+
+`split-lines`, `split-whitespace`, and `split-text` answer lists that work with the ordinary list accessors. A custom separator is currently a string literal:
+
+```scheme
+(first (split-text "name | account" " | "))
+```
+
+Interactive functions can ask for typed input or let the user choose an item:
+
+```scheme
+(choose-from-list options "Choose an account")
+(ask-text "Description")
+(ask-number "Amount")
+```
+
+`format-current-date` formats the current date with a literal Unicode date-format pattern:
+
+```scheme
+(format-current-date "yyyy-MM-dd")
+```
+
+Prompts and date formats are literals in the current MVP. See `Examples/transaction.longway` for a complete interactive Beancount transaction builder.
+
 ## Expressions and actions
 
 Bindings are lexically scoped. A `let` initializer sees the outer scope rather than sibling bindings:
@@ -191,6 +222,13 @@ Numeric comparisons accept at least two operands. Variadic comparisons test adja
 | `(dict-ref d key)` | Read one value by key |
 | `(dict-set d key value)` | Answer a new dictionary with `key` set |
 | `(dict-keys d)`, `(dict-values d)` | Read all keys or all values as a list |
+| `(string-append text …)` | Concatenate text values |
+| `(number->text number)` | Convert a number to text |
+| `(split-lines text)`, `(split-whitespace text)` | Split text into a list |
+| `(split-text text "separator")` | Split text with a literal separator |
+| `(choose-from-list list "prompt")` | Ask the user to choose one item |
+| `(ask-text "prompt")`, `(ask-number "prompt")` | Ask for typed input |
+| `(format-current-date "format")` | Format the current date as text |
 | `(show-result value)` | Show and return a value when used last |
 | `(notification "message")` | Show Notification |
 | `(open-url "https://…")` | URL, then Open URLs |
@@ -222,4 +260,4 @@ longway version
 
 ## MVP boundaries
 
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, dictionaries, arithmetic, comparisons, logical expressions, typed conditionals, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, `dict-has-key?` and dictionary removal, and a larger action catalog remain future work.
+Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, dictionaries, arithmetic, comparisons, logical expressions, typed conditionals, text splitting and composition, typed prompts, list selection, current-date formatting, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, general date values, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, `dict-has-key?` and dictionary removal, and a larger action catalog remain future work.

@@ -17,6 +17,10 @@ let tailCallLoopLimit = 2000
 /// value. `#` cannot appear in a source identifier (see DefinitionParser's
 /// identifier pattern), so this can never collide with a real parameter name.
 private let tailCallResultVariableName = "#result"
+private let tailCallSideEffectingForms: Set<String> = [
+    "show-result", "notification", "open-url", "wait",
+    "choose-from-list", "ask-text", "ask-number"
+]
 
 /// A function is loop-compiled only when its entire body is one expression
 /// (no statements that would need to fire once per logical call, since a
@@ -32,24 +36,17 @@ func isTailRecursive(_ definition: FunctionDefinition) -> Bool {
 }
 
 private func containsDisqualifyingAction(_ expression: Expression) -> Bool {
-    guard case let .list(parts) = expression.value, let head = parts.first,
-          case let .symbol(formName) = head.value
-    else {
+    guard case let .list(parts) = expression.value else {
         return false
     }
-    switch formName {
-    case "show-result", "notification", "open-url", "wait":
+    if let head = parts.first, case let .symbol(formName) = head.value,
+       tailCallSideEffectingForms.contains(formName) {
         return true
-    case "let":
-        guard parts.count >= 3 else { return false }
-        return parts.dropFirst(2).contains { containsDisqualifyingAction($0) }
-    case "if":
-        let arguments = Array(parts.dropFirst())
-        guard arguments.count == 3 else { return false }
-        return containsDisqualifyingAction(arguments[1]) || containsDisqualifyingAction(arguments[2])
-    default:
-        return false
     }
+    // Interactive forms can appear inside value expressions and `let`
+    // initializer binding lists, whose first item is itself a list rather than
+    // a form name. Traverse every child instead of assuming a symbolic head.
+    return parts.contains { containsDisqualifyingAction($0) }
 }
 
 private func tailSelfCall(

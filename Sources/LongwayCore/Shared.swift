@@ -10,6 +10,14 @@ let listOperations: Set<String> = ["list", "length", "list-ref", "first", "last"
 /// derives a new one, and the rest read from one.
 let dictionaryOperations: Set<String> = ["dict", "dict-ref", "dict-set", "dict-keys", "dict-values"]
 
+/// Text processing and interactive Shortcut value forms.
+let textOperations: Set<String> = [
+    "string-append", "number->text", "split-lines", "split-whitespace", "split-text"
+]
+let interactiveOperations: Set<String> = [
+    "choose-from-list", "ask-text", "ask-number", "format-current-date"
+]
+
 func mathOperation(_ symbol: String) -> String? {
     switch symbol {
     case "+": "+"

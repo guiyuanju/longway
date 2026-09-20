@@ -73,6 +73,22 @@ extension FunctionCompiler {
                     environment: environment
                 )
             }
+            if textOperations.contains(operation) {
+                return try compileTextOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
+            if interactiveOperations.contains(operation) {
+                return try compileInteractiveOperation(
+                    operation,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+            }
             if comparisonOperators.contains(operation) {
                 return try compileComparison(
                     operation,
