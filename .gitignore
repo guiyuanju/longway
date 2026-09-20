@@ -2,3 +2,4 @@
 .swiftpm/
 *.shortcut
 .DS_Store
+.agent-shell/
