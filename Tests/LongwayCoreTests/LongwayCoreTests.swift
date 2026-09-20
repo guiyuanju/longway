@@ -140,7 +140,7 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertTrue(setVariableNames.contains("#result"))
     }
 
-    func testBaseCaseExitsImmediatelyInsteadOfIdlingToTheLoopBound() throws {
+    func testBaseCaseStopsAndOutputsInsteadOfIdlingToTheLoopBound() throws {
         let result = try LongwayCompiler().compile("""
         (define (sum-to n acc)
           (if (= n 0)
@@ -159,10 +159,22 @@ final class LongwayCoreTests: XCTestCase {
             else { return false }
             return parameters["WFVariableName"] as? String == "#result"
         })
-        // The base case must exit right after recording its value, before the
-        // Otherwise branch (WFControlFlowMode 1) that starts the recursive step.
-        XCTAssertEqual(identifiers[resultAssignmentIndex + 1], "is.workflow.actions.exit")
-        XCTAssertEqual(identifiers.filter { $0 == "is.workflow.actions.exit" }.count, 1)
+        // The base case must Stop and Output right after recording its value, before
+        // the Otherwise branch (WFControlFlowMode 1) that starts the recursive step.
+        // A bare is.workflow.actions.exit would halt the workflow with no output.
+        let inlineOutputIndex = resultAssignmentIndex + 1
+        XCTAssertEqual(identifiers[inlineOutputIndex], "is.workflow.actions.output")
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.exit"))
+
+        let inlineOutput = try XCTUnwrap(actions[inlineOutputIndex]["WFWorkflowActionParameters"] as? [String: Any])
+        let wfOutput = try XCTUnwrap(inlineOutput["WFOutput"] as? [String: Any])
+        let value = try XCTUnwrap(wfOutput["Value"] as? [String: Any])
+        let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+        XCTAssertFalse(attachments.isEmpty, "base case must output its computed value, not an empty result")
+
+        // The post-loop read stays as the fail-safe for recursion that never
+        // reaches a base case, so there are exactly two output actions.
+        XCTAssertEqual(identifiers.filter { $0 == "is.workflow.actions.output" }.count, 2)
     }
 
     func testLoopVariableReadsAreMaterializedBeforeUseInAConditional() throws {

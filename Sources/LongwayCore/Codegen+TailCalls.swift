@@ -233,12 +233,16 @@ extension FunctionCompiler {
             "WFVariableName": resultVariableName,
             "WFInput": ShortcutPlist.actionOutputAttachment(name: output.name, uuid: output.uuid)
         ]))
-        // Stop the whole workflow the moment a base case is reached, instead of
-        // idling through the remaining iterations re-deciding the same (now-frozen)
-        // base case. If this ever behaved unexpectedly, the loop still falls through
-        // to the bound and reads #result afterward, so this is a pure performance
-        // win, not a correctness dependency.
-        actions.append(ShortcutPlist.action("is.workflow.actions.exit"))
+        // "Stop and Output" is `is.workflow.actions.output` itself: it returns the
+        // value AND halts the workflow, so a base case returns immediately instead
+        // of idling through the remaining iterations. A bare
+        // `is.workflow.actions.exit` would halt without producing any output at all.
+        // The #result write above is the fail-safe: if this somehow didn't halt, the
+        // loop would just keep re-deciding the same base case and the post-loop read
+        // returns the same value.
+        actions.append(ShortcutPlist.action("is.workflow.actions.output", parameters: [
+            "WFOutput": ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
+        ]))
         return actions
     }
 }
