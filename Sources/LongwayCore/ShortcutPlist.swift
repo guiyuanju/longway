@@ -4,6 +4,11 @@ import Foundation
 /// Kept free of any compiler/type-inference model so it can be reused (and tested)
 /// independently as the action catalog and value types grow.
 enum ShortcutPlist {
+    enum TextSegment {
+        case literal(String)
+        case actionOutput(name: String, uuid: String)
+    }
+
     static func action(
         _ identifier: String,
         parameters: [String: Any] = [:],
@@ -30,9 +35,38 @@ enum ShortcutPlist {
     }
 
     static func actionOutputTokenString(name: String, uuid: String) -> [String: Any] {
+        textTokenString(segments: [.actionOutput(name: name, uuid: uuid)])
+    }
+
+    /// Builds the token string used by Text actions containing a mixture of
+    /// literal text and action-output magic variables. Attachment ranges use
+    /// UTF-16 offsets, matching NSString/NSRange and WorkflowKit serialization.
+    static func textTokenString(segments: [TextSegment]) -> [String: Any] {
+        var string = ""
+        var attachments: [String: Any] = [:]
+        for segment in segments {
+            switch segment {
+            case let .literal(literal):
+                string += literal
+            case let .actionOutput(name, uuid):
+                let offset = (string as NSString).length
+                string += "\u{FFFC}"
+                attachments["{\(offset), 1}"] = actionOutputValue(name: name, uuid: uuid)
+            }
+        }
+        return [
+            "Value": [
+                "attachmentsByRange": attachments,
+                "string": string
+            ],
+            "WFSerializationType": "WFTextTokenString"
+        ]
+    }
+
+    static func currentDateTokenString() -> [String: Any] {
         [
             "Value": [
-                "attachmentsByRange": ["{0, 1}": actionOutputValue(name: name, uuid: uuid)],
+                "attachmentsByRange": ["{0, 1}": ["Type": "CurrentDate"]],
                 "string": "\u{FFFC}"
             ],
             "WFSerializationType": "WFTextTokenString"
