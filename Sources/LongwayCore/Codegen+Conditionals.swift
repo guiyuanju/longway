@@ -79,7 +79,7 @@ extension FunctionCompiler {
         case "<=": condition = 1
         case ">": condition = 2
         case ">=": condition = 3
-        case "=": condition = 4
+        case "=": condition = equalityConditionCode
         default: preconditionFailure("unknown comparison operation")
         }
         return lowerNumericConditional(
@@ -96,25 +96,48 @@ extension FunctionCompiler {
         trueBranch: CompiledValue,
         falseBranch: CompiledValue
     ) -> CompiledValue {
+        var prefixActions: [[String: Any]] = []
+        var input = comparison.left
         var conditionParameters: [String: Any] = ["WFCondition": condition]
         switch comparison.right {
         case let .literalNumber(number):
             conditionParameters["WFNumberValue"] = number
         case let .output(output):
-            conditionParameters["WFConditionalActionString"] = ShortcutPlist.actionOutputTokenString(
-                name: output.name,
-                uuid: output.uuid
-            )
+            // No numeric condition on a Number input offers a variable slot -
+            // the editor only lets you type a number, for `is` and for every
+            // relational condition alike - so "this number is greater than that
+            // number" has no serialization. A value written into
+            // WFConditionalActionString imports fine and is then never read, so
+            // the condition silently never matches. Compare the difference
+            // against a literal zero instead: `a < b` is `a - b < 0`, and the
+            // ordering of the difference against zero matches the ordering of
+            // the operands for every condition code.
+            input = subtract(output, from: input, into: &prefixActions)
+            conditionParameters["WFNumberValue"] = 0
         case .literalString, .literalBoolean:
             preconditionFailure("non-number value cannot be used in a numeric comparison")
         }
         return lowerShortcutConditional(
-            prefixActions: [],
-            input: comparison.left,
+            prefixActions: prefixActions,
+            input: input,
             conditionParameters: conditionParameters,
             trueBranch: trueBranch,
             falseBranch: falseBranch
         )
+    }
+
+    private func subtract(
+        _ right: ActionOutputReference,
+        from left: ActionOutputReference,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        let uuid = UUID().uuidString
+        actions.append(ShortcutPlist.action("is.workflow.actions.math", parameters: [
+            "WFInput": ShortcutPlist.actionOutputAttachment(name: left.name, uuid: left.uuid),
+            "WFMathOperation": "-",
+            "WFMathOperand": ShortcutPlist.actionOutputAttachment(name: right.name, uuid: right.uuid)
+        ], uuid: uuid))
+        return ActionOutputReference(type: .number, name: "Calculation Result", uuid: uuid)
     }
 
     func lowerConditional(

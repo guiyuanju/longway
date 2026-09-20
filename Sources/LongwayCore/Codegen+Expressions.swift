@@ -216,13 +216,8 @@ extension FunctionCompiler {
             }
             actions.append(contentsOf: compiledOperand.actions)
             var right = compiledOperand.value
-            switch right {
-            case .literalNumber(let number) where number == 0 && operation != "=":
+            if case let .output(output) = right, !output.isRuntimeTyped {
                 right = .output(materializeNumber(right, into: &actions))
-            case let .output(output) where !output.isRuntimeTyped:
-                right = .output(materializeNumber(right, into: &actions))
-            default:
-                break
             }
             comparisons.append(NumericComparison(left: left, right: right))
 

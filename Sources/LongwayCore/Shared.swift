@@ -1,5 +1,8 @@
 let comparisonOperators: Set<String> = ["=", "<", "<=", ">", ">="]
 
+/// Shortcut condition code for `is`, the equality comparison.
+let equalityConditionCode = 4
+
 func mathOperation(_ symbol: String) -> String? {
     switch symbol {
     case "+": "+"

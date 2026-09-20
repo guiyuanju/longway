@@ -728,6 +728,56 @@ final class LongwayCoreTests: XCTestCase {
         )
     }
 
+    func testEqualityAgainstAVariableSubtractsAndTestsAgainstLiteralZero() throws {
+        // Shortcuts' `is` condition on a Number input has no variable slot: the
+        // editor only accepts a typed number, so WFConditionalActionString is
+        // never read and the condition silently never matches. Comparing the
+        // difference against a literal zero is the shape that does work.
+        let result = try LongwayCompiler().compile("""
+        (define (same a b)
+          (= a b))
+        """)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+
+        let comparison = try XCTUnwrap(actions.first {
+            guard $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.conditional",
+                  let parameters = $0["WFWorkflowActionParameters"] as? [String: Any]
+            else { return false }
+            return parameters["WFControlFlowMode"] as? Int == 0
+        })
+        let parameters = try XCTUnwrap(comparison["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(parameters["WFCondition"] as? Int, 4)
+        XCTAssertEqual(parameters["WFNumberValue"] as? Double, 0)
+        XCTAssertNil(parameters["WFConditionalActionString"])
+
+        let input = try XCTUnwrap(parameters["WFInput"] as? [String: Any])
+        let variable = try XCTUnwrap(input["Variable"] as? [String: Any])
+        let inputValue = try XCTUnwrap(variable["Value"] as? [String: Any])
+        let inputUUID = try XCTUnwrap(inputValue["OutputUUID"] as? String)
+
+        let math = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String == inputUUID
+        })
+        XCTAssertEqual(math["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.math")
+        let mathParameters = try XCTUnwrap(math["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(mathParameters["WFMathOperation"] as? String, "-")
+
+        // Both operands reach the subtraction: a as the input, b as the operand.
+        let operand = try XCTUnwrap(mathParameters["WFMathOperand"] as? [String: Any])
+        let operandValue = try XCTUnwrap(operand["Value"] as? [String: Any])
+        XCTAssertEqual(operandValue["Type"] as? String, "ActionOutput")
+        let mathInput = try XCTUnwrap(mathParameters["WFInput"] as? [String: Any])
+        let mathInputValue = try XCTUnwrap(mathInput["Value"] as? [String: Any])
+        XCTAssertEqual(mathInputValue["Type"] as? String, "ActionOutput")
+        XCTAssertNotEqual(
+            mathInputValue["OutputUUID"] as? String,
+            operandValue["OutputUUID"] as? String
+        )
+    }
+
     func testNumericComparisonLowersToShortcutCondition() throws {
         let result = try LongwayCompiler().compile("""
         (define (test)
@@ -779,27 +829,30 @@ final class LongwayCoreTests: XCTestCase {
             PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
         )
         let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
-        let xParameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
-        let yParameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
-        let xUUID = try XCTUnwrap(xParameters["UUID"] as? String)
-        let yUUID = try XCTUnwrap(yParameters["UUID"] as? String)
+        let xUUID = try XCTUnwrap((actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String)
+        let yUUID = try XCTUnwrap((actions[1]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String)
 
-        let outer = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        // x < y compares x - y against zero, because a number condition has no
+        // variable slot; y < 3 keeps the literal in the number field.
+        let difference = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(actions[2]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.math")
+        XCTAssertEqual(difference["WFMathOperation"] as? String, "-")
+        let differenceInput = try XCTUnwrap(difference["WFInput"] as? [String: Any])
+        XCTAssertEqual((differenceInput["Value"] as? [String: Any])?["OutputUUID"] as? String, xUUID)
+        let differenceOperand = try XCTUnwrap(difference["WFMathOperand"] as? [String: Any])
+        XCTAssertEqual((differenceOperand["Value"] as? [String: Any])?["OutputUUID"] as? String, yUUID)
+        let differenceUUID = try XCTUnwrap(difference["UUID"] as? String)
+
+        let outer = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(outer["WFCondition"] as? Int, 0)
+        XCTAssertEqual(outer["WFNumberValue"] as? Double, 0)
+        XCTAssertNil(outer["WFConditionalActionString"])
         let outerInput = try XCTUnwrap(outer["WFInput"] as? [String: Any])
         let outerVariable = try XCTUnwrap(outerInput["Variable"] as? [String: Any])
         let outerValue = try XCTUnwrap(outerVariable["Value"] as? [String: Any])
-        XCTAssertEqual(outerValue["OutputUUID"] as? String, xUUID)
-        let outerRight = try XCTUnwrap(outer["WFConditionalActionString"] as? [String: Any])
-        let outerRightValue = try XCTUnwrap(outerRight["Value"] as? [String: Any])
-        let outerRightAttachments = try XCTUnwrap(
-            outerRightValue["attachmentsByRange"] as? [String: Any]
-        )
-        XCTAssertEqual(
-            (outerRightAttachments["{0, 1}"] as? [String: Any])?["OutputUUID"] as? String,
-            yUUID
-        )
+        XCTAssertEqual(outerValue["OutputUUID"] as? String, differenceUUID)
 
-        let inner = try XCTUnwrap(actions[3]["WFWorkflowActionParameters"] as? [String: Any])
+        let inner = try XCTUnwrap(actions[4]["WFWorkflowActionParameters"] as? [String: Any])
         let innerInput = try XCTUnwrap(inner["WFInput"] as? [String: Any])
         let innerVariable = try XCTUnwrap(innerInput["Variable"] as? [String: Any])
         let innerValue = try XCTUnwrap(innerVariable["Value"] as? [String: Any])
