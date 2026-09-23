@@ -1,158 +1,10 @@
 # Longway
 
-Longway is a small, Scheme-inspired language that compiles functions into Apple Shortcut files. The compiler and CLI are written in Swift.
+A small Scheme-inspired language that compiles to Apple Shortcuts. Written in Swift.
 
-This repository is an MVP: it provides readable S-expressions, source-located diagnostics, type inference, binary/XML property-list generation, and optional signing through Apple's `shortcuts` CLI. It is not a complete Scheme implementation.
-
-## Quick start
-
-Longway requires macOS 13+ and Swift 6.
-
-```sh
-swift build -c release
-.build/release/longway check Examples/functions.longway
-.build/release/longway build Examples/functions.longway
-```
-
-A source file may define several functions. Build writes one standalone Shortcut per function to `<source-name>.shortcuts/` by default:
-
-```text
-Examples/functions.shortcuts/
-├── sum-to.shortcut
-└── sum-to-ten.shortcut
-```
-
-Unsigned output is useful for inspecting compiler output:
-
-```sh
-plutil -p Examples/functions.shortcuts/sum-to.shortcut
-```
-
-To produce files that Apple's Shortcuts app can import, sign every generated function:
-
-```sh
-.build/release/longway build Examples/functions.longway \
-  -o Functions --sign
-open Functions/sum-to.shortcut
-open Functions/sum-to-ten.shortcut
-```
-
-Signing is an Apple service. It may require an Apple ID, network access, and permission to share shortcuts. Longway signs the complete program before replacing any destination files.
-
-## Inspecting Shortcut actions
-
-Use `inspect-actions` to list actions from either an unsigned workflow plist or an Apple-signed `.shortcut` export:
-
-```sh
-.build/release/longway inspect-actions path/to/workflow.shortcut
-```
-
-To isolate third-party App Intent actions and save each one as a readable XML property list:
-
-```sh
-.build/release/longway inspect-actions path/to/workflow.shortcut \
-  --third-party-only -o extracted-actions
-```
-
-The output directory must be empty. Signed exports are verified with the public key from their embedded Apple signing certificate, then unpacked with macOS's `aea` and `aa` tools. Extracted action parameters can contain repository names, local paths, prompts, and other private workflow data; review them before committing or sharing the files.
-
-## Declarative action catalogs
-
-Third-party app actions are data rather than compiler code. Pass one or more versioned JSON catalogs explicitly when checking or building:
-
-```sh
-.build/release/longway check Examples/working-copy.longway \
-  --actions Actions/WorkingCopy.longway-actions.json
-
-.build/release/longway build Examples/working-copy.longway \
-  --actions Actions/WorkingCopy.longway-actions.json
-```
-
-A catalog gives each source form a typed argument list, optional result, side-effect declaration, and raw Shortcut action template. Constant fields are copied unchanged while `$longway` placeholders are rendered during compilation:
-
-```json
-{
-  "version": 1,
-  "actions": [{
-    "name": "example-echo",
-    "arguments": [{ "name": "text", "type": "text" }],
-    "result": {
-      "type": "text",
-      "outputName": "Echo",
-      "runtimeTyped": true
-    },
-    "sideEffect": false,
-    "template": {
-      "WFWorkflowActionIdentifier": "com.example.EchoIntent",
-      "WFWorkflowActionParameters": {
-        "UUID": { "$longway": "uuid" },
-        "text": {
-          "$longway": "argument",
-          "name": "text",
-          "encoding": "text-token"
-        }
-      }
-    }
-  }]
-}
-```
-
-Supported source types are `text`, `number`, `boolean`, `list`, `dictionary`, and `any`. Supported argument encodings are:
-
-- `text-token`: a `WFTextTokenString` containing a literal or action-output reference.
-- `attachment`: a `WFTextTokenAttachment`; literals are materialized first.
-- `literal`: a raw string, number, or Boolean; computed values are rejected.
-- `number`: a literal number or number action-output reference.
-- `app-entity`: a literal text identifier encoded as an App Intent entity with matching identifier, title, and subtitle.
-
-Catalog names cannot shadow built-ins, functions, or names from another loaded catalog. Arguments must be used by the template, templates must generate their action UUID, and catalog-declared side effects disable tail-call loop optimization when encountered. `Actions/WorkingCopy.longway-actions.json` demonstrates a catalog derived from an exported iOS workflow. Its generated plist is structurally verified, but the parameterized repository fields on Write and Pull still need execution on an iOS device with Working Copy installed.
-
-## Functions
-
-Programs contain one or more `define` forms. Parameters and return values do not need type annotations:
-
-```scheme
-(define (add x y)
-  (+ x y))
-
-(define (main)
-  (add 20 22))
-```
-
-Each definition becomes an independently importable Shortcut named after the function. A function's final expression is its return value. Earlier forms may perform actions for side effects:
-
-```scheme
-(define (morning)
-  (notification "Good morning!")
-  (wait 1)
-  "Morning complete")
-```
-
-Function calls compile to explicit Dictionary and Run Shortcut actions. Arguments are transported by parameter name. The called Shortcut reads them from `Shortcut Input` and ends with Stop and Output.
-
-When invoking a generated function from outside Longway, pass a dictionary whose keys match its parameter names. All function Shortcuts referenced by a program must be installed without renaming them. Replace an existing generated Shortcut instead of importing a duplicate: an automatic suffix such as `sum-to 1` breaks name-based calls.
-
-### Inference and generic values
-
-Longway infers constraints from operations. In this function, `value` and the result are inferred as numbers:
-
-```scheme
-(define (double value)
-  (+ value value))
-```
-
-Values without constraints remain generic and preserve their runtime Shortcut value:
-
-```scheme
-(define (identity value)
-  value)
-```
-
-The compiler reports provable type conflicts, while genuinely dynamic mismatches may be reported by Shortcuts at runtime.
-
-### Recursion
-
-Direct and mutual recursion are supported. Recursive calls run the generated Shortcut again, so a terminating condition is required:
+Longway is an MVP, not a complete Scheme: S-expressions, type inference,
+source-located diagnostics, property-list output, and optional signing through
+Apple's `shortcuts` CLI.
 
 ```scheme
 (define (sum-to n acc)
@@ -161,174 +13,178 @@ Direct and mutual recursion are supported. Recursive calls run the generated Sho
       (sum-to (- n 1) (+ acc n))))
 
 (define (sum-to-ten)
-  (sum-to 10 0))
+  (show-result (sum-to 10 0)))
 ```
 
-`if`, `and`, and `or` keep non-selected expressions inside Shortcut conditional branches, preserving lazy and short-circuit behavior.
+That is `Examples/functions.longway`, verbatim.
 
-A function whose entire body is a single direct self-call in tail position — like `sum-to` above, where every branch of the closing `if` either returns a plain value or calls `sum-to` again with no further work — compiles to a bounded loop inside the same Shortcut instead of a recursive Shortcut call, so it no longer consumes Shortcut runtime call-stack depth. As soon as a base case is reached, the loop stops the whole Shortcut immediately instead of continuing to iterate, so ordinary terminating recursion runs in exactly as many steps as it needs. The loop is still capped at a fixed number of iterations (currently 2000) as a safety net for recursion that never reaches a base case; in that pathological case it returns whatever the accumulator held at the bound instead of running forever. Mutual recursion (like `even`/`odd` calling each other), non-tail recursion (a self-call used inside another expression, e.g. `(+ 1 (count-up (- n 1)))`), and any function whose body has more than one form or performs a `notification`/`open-url`/`wait`/`show-result` on the path to its self-call are not loop-optimized — they keep calling the generated Shortcut recursively and are still bounded by Shortcut runtime call-stack depth.
+## Quick start
 
-## Lists
+Requires macOS 13+ and Swift 6.
 
-`(list ...)` builds a Shortcuts list. Elements are ordered and untyped — a list may mix text, numbers, and Booleans — and indexes start at 0 like Scheme's `list-ref`:
-
-```scheme
-(define (second-name)
-  (let ((names (list "Ada" "Grace" "Alan")))
-    (list-ref names 1)))
+```sh
+swift build -c release
+.build/release/longway check Examples/functions.longway
+.build/release/longway build Examples/functions.longway
 ```
 
-`length` counts items, `first` and `last` read the ends, `empty?` tests for no items, and `list-ref` reads by index. Reading an element yields a generic value, so the operation that consumes it decides its type:
+Each `define` becomes one standalone Shortcut, written to `<source>.shortcuts/`:
 
-```scheme
-(define (sum-list items index total)
-  (if (= index (length items))
-      total
-      (sum-list items (+ index 1) (+ total (list-ref items index)))))
+```text
+Examples/functions.shortcuts/
+├── sum-to.shortcut
+└── sum-to-ten.shortcut
 ```
 
-That traversal is a single-form tail-recursive definition, so it compiles to one bounded in-workflow loop: the list stays in a Shortcuts variable and is never re-serialized between iterations.
+Inspect unsigned output with `plutil -p <file>`. To import into the Shortcuts
+app, sign it — an Apple service that may need an Apple ID and network access:
 
-A list may be passed to another Longway function and returned from one. An argument travels as an array-typed field in the argument dictionary, which preserves it; a result returns through Stop and Output as a single attachment, the same way the Shortcuts editor writes a list variable.
-
-Lists also cannot nest — a list element may not itself be a list or a dictionary — and there is no `cons`, `append`, `map`, or `filter` yet.
-
-## Dictionaries
-
-`(dict ...)` builds a Shortcuts dictionary from alternating keys and values. Keys are text; values are untyped, just like list elements:
-
-```scheme
-(define (greeting)
-  (let ((person (dict "name" "Ada" "born" 1815)))
-    (dict-ref person "name")))
+```sh
+.build/release/longway build Examples/functions.longway -o Functions --sign
+open Functions/sum-to.shortcut
 ```
 
-`dict-ref` reads one value, `dict-keys` and `dict-values` read all of them out as lists, and `dict-set` answers a new dictionary rather than changing the one it was given:
+## Language reference
 
-```scheme
-(define (renamed)
-  (let ((person (dict "name" "Ada")))
-    (dict-ref (dict-set person "name" "Grace") "name")))
-```
-
-Because a read is untyped, the operation consuming it decides its type — `(- year (dict-ref person "born"))` reads `born` as a number.
-
-Unlike a list, a dictionary may hold a list or another dictionary, so records can nest:
-
-```scheme
-(define (record)
-  (dict "name" "Ada" "languages" (list "Analytical Engine")))
-```
-
-The one exception is `dict-set`, which cannot store a list or a dictionary; build those with `dict`.
-
-Dictionaries cross function calls in both directions, as arguments and as return values.
-
-Two sharp edges. Shortcuts treats `.` in a key as a path into nested content, so `(dict-ref d "a.b")` looks for `b` inside `a` rather than for a key literally named `a.b`. And there is no `dict-has-key?` yet — Shortcuts has no key-membership action, and the available workarounds are not safe to rely on until `dict-set`'s copy-versus-mutate behavior is confirmed on a device.
-
-## Text and interactive input
-
-`string-append` combines text values into one Shortcuts Text action. Convert a number explicitly with `number->text`:
-
-```scheme
-(define (receipt name amount)
-  (string-append "Paid " (number->text amount) " to " name))
-```
-
-`split-lines`, `split-whitespace`, and `split-text` answer lists that work with the ordinary list accessors. A custom separator is currently a string literal:
-
-```scheme
-(first (split-text "name | account" " | "))
-```
-
-Interactive functions can ask for typed input or let the user choose an item:
-
-```scheme
-(choose-from-list options "Choose an account")
-(ask-text "Description")
-(ask-number "Amount")
-```
-
-`format-current-date` formats the current date with a literal Unicode date-format pattern:
-
-```scheme
-(format-current-date "yyyy-MM-dd")
-```
-
-Prompts and date formats are literals in the current MVP. See `Examples/transaction.longway` for a complete interactive Beancount transaction builder.
-
-## Expressions and actions
-
-Bindings are lexically scoped. A `let` initializer sees the outer scope rather than sibling bindings. Use `let*` when each initializer should see the bindings before it:
-
-```scheme
-(define (calculate)
-  (let* ((x 10)
-         (y (+ x 4)))
-    (* y 2)))
-```
-
-A later `let*` binding may reuse a name to sequentially shadow its earlier value. Ordinary `let` continues to reject duplicate names in one binding list.
-
-Numeric comparisons accept at least two operands. Variadic comparisons test adjacent pairs, so `(< 1 2 3)` means both `1 < 2` and `2 < 3`.
-
-| Longway form | Meaning |
+| Form | Meaning |
 | --- | --- |
 | `(define (name args …) body … result)` | Compile one standalone function Shortcut |
 | `(name args …)` | Call another generated function Shortcut |
-| `(let ((name value) …) body …)` | Lexically bind values with parallel initializer scope |
-| `(let* ((name value) …) body …)` | Lexically bind values sequentially from left to right |
-| `(+ a b …)`, `(- a b …)` | Add or subtract numbers |
-| `(* a b …)`, `(/ a b …)` | Multiply or divide numbers |
-| `(= a b …)`, `(< a b …)`, `(<= a b …)`, `(> a b …)`, `(>= a b …)` | Compare adjacent numbers |
+| `(let ((name value) …) body …)` | Bind values; initializers see the outer scope |
+| `(let* ((name value) …) body …)` | Bind sequentially; each initializer sees the previous |
 | `(if condition consequent alternative)` | Lazily select a value or action branch |
-| `(and a b …)`, `(or a b …)` | Short-circuit Boolean operations |
-| `(not value)` | Boolean negation |
+| `(+ a b …)`, `(- a b …)`, `(* a b …)`, `(/ a b …)` | Arithmetic |
+| `(= a b …)`, `(< a b …)`, `(<= a b …)`, `(> a b …)`, `(>= a b …)` | Compare adjacent numbers |
+| `(and a b …)`, `(or a b …)`, `(not a)` | Short-circuit Boolean logic |
 | `(list a b …)` | Build a list |
-| `(length lst)` | Number of items |
-| `(list-ref lst index)` | Read an item by 0-based index |
-| `(first lst)`, `(last lst)` | Read the first or last item |
-| `(empty? lst)` | Test for a list with no items |
+| `(length lst)`, `(empty? lst)` | Item count, emptiness test |
+| `(list-ref lst index)`, `(first lst)`, `(last lst)` | Read an item (0-based) |
 | `(dict key value …)` | Build a dictionary from alternating keys and values |
-| `(dict-ref d key)` | Read one value by key |
-| `(dict-set d key value)` | Answer a new dictionary with `key` set |
-| `(dict-keys d)`, `(dict-values d)` | Read all keys or all values as a list |
-| `(string-append text …)` | Concatenate text values |
-| `(number->text number)` | Convert a number to text |
-| `(split-lines text)`, `(split-whitespace text)` | Split text into a list |
-| `(split-text text "separator")` | Split text with a literal separator |
-| `(choose-from-list list "prompt")` | Ask the user to choose one item |
+| `(dict-ref d key)`, `(dict-set d key value)` | Read one value; answer a new dictionary |
+| `(dict-keys d)`, `(dict-values d)` | Read all keys or values as a list |
+| `(string-append text …)`, `(number->text n)` | Concatenate; convert |
+| `(split-lines t)`, `(split-whitespace t)`, `(split-text t "sep")` | Split text into a list |
+| `(choose-from-list lst "prompt")` | Ask the user to choose one item |
 | `(ask-text "prompt")`, `(ask-number "prompt")` | Ask for typed input |
 | `(format-current-date "format")` | Format the current date as text |
 | `(show-result value)` | Show and return a value when used last |
-| `(notification "message")` | Show Notification |
-| `(open-url "https://…")` | URL, then Open URLs |
-| `(wait 1.5)` | Wait |
+| `(notification "message")`, `(open-url "https://…")`, `(wait 1.5)` | Effects |
 
-Strings support `\n`, `\r`, `\t`, `\"`, and `\\`. Booleans are written as `#t` and `#f`.
+Booleans are `#t` and `#f`. Strings support `\n`, `\r`, `\t`, `\"`, and `\\`.
+Comparisons test adjacent pairs, so `(< 1 2 3)` means `1 < 2` and `2 < 3`.
+
+### Types
+
+Types are inferred from use — no annotations. In `(define (double v) (+ v v))`,
+`v` and the result are numbers. Unconstrained values stay generic and preserve
+their runtime Shortcut value. Reading a list element or dictionary value yields
+a generic value, so whatever consumes it decides its type. The compiler reports
+provable conflicts; genuinely dynamic mismatches surface at runtime.
+
+### Function calls
+
+Calls compile to Dictionary + Run Shortcut actions, passing arguments by
+parameter name. Every referenced function must be installed under its generated
+name — replace an existing Shortcut rather than importing a duplicate, since an
+automatic `sum-to 1` suffix breaks name-based calls.
+
+### Recursion
+
+Direct and mutual recursion both work; a terminating condition is required.
+
+A function whose entire body is one direct self-call in tail position (like
+`sum-to` above) compiles to a bounded in-workflow loop instead of a recursive
+Shortcut call, so it costs no Shortcut call-stack depth and stops as soon as a
+base case is reached. The loop is capped at 2000 iterations as a safety net;
+past that it returns whatever the accumulator held.
+
+Everything else — mutual recursion, non-tail self-calls, multi-form bodies, and
+any side effect on the path to the self-call — recurses through Run Shortcut and
+stays bounded by the Shortcuts runtime call stack.
+
+## Sharp edges
+
+- **Lists cannot nest.** A list element may not be a list or a dictionary.
+  Dictionaries *can* nest, except via `dict-set`, whose value rides in a
+  text-shaped field — build nested records with `dict`.
+- **`.` in a dictionary key is a path.** `(dict-ref d "a.b")` looks for `b`
+  inside `a`, not for a key named `a.b`.
+- **Some arguments must be literals**: `split-text` separators, all prompts, and
+  `format-current-date` patterns.
+- **Not yet implemented**: `cons`/`append`/`map`/`filter`, `dict-has-key?`,
+  dictionary removal, higher-order functions, macros, general date values.
 
 ## CLI
 
 ```text
-longway build <file.longway> [-o output-directory] [--xml]
-              [--sign[=anyone|people-who-know-me]]
-longway check <file.longway>
+longway build <file.longway> [-o directory] [--xml] [--actions catalog.json]…
+                             [--sign[=anyone|people-who-know-me]]
+longway check <file.longway> [--actions catalog.json]…
+longway inspect-actions <file.shortcut> [-o directory] [--third-party-only]
 longway version
 ```
 
-- `build` emits one `.shortcut` per function.
-- `check` validates every definition without writing files.
-- `-o` selects the output directory.
-- `--xml` emits human-readable XML property lists instead of binary files.
-- `--sign` invokes `/usr/bin/shortcuts sign` for every artifact. It defaults to `people-who-know-me`; use `--sign=anyone` for public sharing.
+- `check` validates without writing files; `build` emits one `.shortcut` per function.
+- `--xml` emits readable XML property lists instead of binary.
+- `--sign` runs `/usr/bin/shortcuts sign` on every artifact, defaulting to
+  `people-who-know-me`. The whole program is signed before any file is replaced.
+- `inspect-actions` lists actions from an unsigned workflow or an Apple-signed
+  export, optionally writing each as an XML plist. Signed exports are verified
+  against the public key in their certificate and unpacked with `aea`/`aa`. The
+  output directory must be empty, and extracted parameters can contain private
+  workflow data — review before sharing.
+
+## Action catalogs
+
+Third-party app actions are data, not compiler code. Pass versioned JSON
+catalogs explicitly:
+
+```sh
+.build/release/longway check Examples/working-copy.longway \
+  --actions Actions/WorkingCopy.longway-actions.json
+```
+
+Each entry gives a source name, typed arguments, an optional result, a
+side-effect flag, and a raw action template. Constant fields are copied as-is;
+`$longway` placeholders are rendered during compilation:
+
+```json
+{
+  "version": 1,
+  "actions": [{
+    "name": "example-echo",
+    "arguments": [{ "name": "text", "type": "text" }],
+    "result": { "type": "text", "outputName": "Echo", "runtimeTyped": true },
+    "sideEffect": false,
+    "template": {
+      "WFWorkflowActionIdentifier": "com.example.EchoIntent",
+      "WFWorkflowActionParameters": {
+        "UUID": { "$longway": "uuid" },
+        "text": { "$longway": "argument", "name": "text", "encoding": "text-token" }
+      }
+    }
+  }]
+}
+```
+
+Argument types are `text`, `number`, `boolean`, `list`, `dictionary`, and `any`.
+Encodings are `text-token` (literal or output reference), `attachment`
+(materializing literals first), `literal` (rejects computed values), `number`,
+and `app-entity`. Catalog names may not shadow built-ins, functions, or another
+catalog; every argument must be used by its template; templates must generate
+their own UUID; declared side effects disable tail-call optimization.
+
+`Actions/WorkingCopy.longway-actions.json` is a worked example derived from an
+exported iOS workflow. Its output is structurally verified, but the parameterized
+repository fields still need a device test with Working Copy installed.
 
 ## Project layout
 
-- `Sources/LongwayCore` — lexer, parser, inference, semantic validation, and Shortcut emitter
-- `Sources/LongwayCLI` — dependency-free command-line interface and Apple signer integration
-- `Tests/LongwayCoreTests` — parser/compiler tests
-- `Examples` — sample Longway programs
+- `Sources/LongwayCore` — lexer, parser, inference, and Shortcut emitter
+- `Sources/LongwayCLI` — dependency-free CLI and Apple signer integration
+- `Tests/LongwayCoreTests`, `Examples/` — tests and sample programs
 
-## MVP boundaries
-
-Longway currently supports first-order functions, recursive calls, lexical bindings, strings, numbers, Booleans, flat lists, dictionaries, arithmetic, comparisons, logical expressions, typed conditionals, text splitting and composition, typed prompts, list selection, current-date formatting, and a small action catalog. Functions are linked by installed Shortcut name. Tail-call optimization covers only direct, single-form, side-effect-free self-recursion (see Recursion above); mutual recursion, non-tail recursion, higher-order functions, macros, general date values, list construction beyond `list` (`cons`, `append`, `map`, `filter`), nested lists, `dict-has-key?` and dictionary removal, and a larger action catalog remain future work.
+Compilation runs source → tokens → syntax → definitions → inferred signatures →
+Shortcut actions. `Builtins.swift` declares every built-in form's arity and
+operand types once; inference checks against that table and the reserved-name set
+derives from it, so adding a form means one table entry plus its lowering.

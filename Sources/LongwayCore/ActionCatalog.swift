@@ -134,6 +134,31 @@ struct ExternalActionArgument: Sendable {
     let type: ValueType
 }
 
+/// How a template carries one argument into a Shortcuts action parameter.
+/// Rendering switches over this exhaustively, so a new case cannot be added
+/// without teaching the renderer to emit it.
+enum ArgumentEncoding: String, Sendable {
+    /// A `WFTextTokenString` holding a literal or an action-output reference.
+    case textToken = "text-token"
+    /// A `WFTextTokenAttachment`; a literal is materialized into an action first.
+    case attachment
+    /// A raw string, number, or Boolean. A computed value is rejected.
+    case literal
+    /// A literal number, or a reference to a number-producing action.
+    case number
+    /// A literal text identifier encoded as an App Intent entity.
+    case appEntity = "app-entity"
+
+    /// The types this encoding can actually carry, or `nil` for any of them.
+    var requiredType: ValueType? {
+        switch self {
+        case .number: .number
+        case .appEntity: .text
+        case .textToken, .attachment, .literal: nil
+        }
+    }
+}
+
 struct ExternalActionResult: Sendable {
     let type: ValueType
     let outputName: String
@@ -222,17 +247,16 @@ indirect enum JSONValue: Decodable, Equatable, Sendable {
                     guard let argumentType = argumentTypes[name] else {
                         throw ActionCatalogError("template for '\(actionName)' references unknown argument '\(name)'")
                     }
-                    guard ["text-token", "attachment", "literal", "number", "app-entity"].contains(encoding) else {
+                    guard let encoding = ArgumentEncoding(rawValue: encoding) else {
                         throw ActionCatalogError("argument '\(name)' of '\(actionName)' uses unsupported encoding '\(encoding)'")
                     }
-                    guard encoding != "number" || argumentType == .number else {
-                        throw ActionCatalogError("number encoding requires argument '\(name)' of '\(actionName)' to have number type")
+                    if let required = encoding.requiredType, argumentType != required {
+                        throw ActionCatalogError(
+                            "\(encoding.rawValue) encoding requires argument '\(name)' of '\(actionName)' to have \(required.name) type"
+                        )
                     }
-                    guard encoding != "text-token" || (argumentType != .list && argumentType != .dictionary) else {
+                    guard encoding != .textToken || (argumentType != .list && argumentType != .dictionary) else {
                         throw ActionCatalogError("text-token encoding cannot carry \(argumentType.pluralName) for argument '\(name)' of '\(actionName)'")
-                    }
-                    guard encoding != "app-entity" || argumentType == .text else {
-                        throw ActionCatalogError("app-entity encoding requires argument '\(name)' of '\(actionName)' to have text type")
                     }
                     referencedArguments.insert(name)
                 default:
@@ -265,15 +289,10 @@ indirect enum JSONValue: Decodable, Equatable, Sendable {
 
 private extension ValueType {
     init(catalogName: String, context: String) throws {
-        switch catalogName {
-        case "text": self = .text
-        case "number": self = .number
-        case "boolean": self = .boolean
-        case "list": self = .list
-        case "dictionary": self = .dictionary
-        case "any": self = .any
-        default: throw ActionCatalogError("unknown type '\(catalogName)' for \(context)")
+        guard let type = ValueType(rawValue: catalogName) else {
+            throw ActionCatalogError("unknown type '\(catalogName)' for \(context)")
         }
+        self = type
     }
 }
 

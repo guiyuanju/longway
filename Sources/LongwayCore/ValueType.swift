@@ -1,4 +1,4 @@
-enum ValueType: Equatable, Sendable {
+enum ValueType: String, Equatable, Sendable {
     case text
     case number
     case boolean

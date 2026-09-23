@@ -85,6 +85,13 @@ private func tailSelfCall(
 }
 
 extension FunctionCompiler {
+    private func setVariable(_ name: String, to value: ActionOutputReference) -> [String: Any] {
+        ShortcutPlist.action("is.workflow.actions.setvariable", parameters: [
+            "WFVariableName": name,
+            "WFInput": ShortcutPlist.actionOutputAttachment(name: value.name, uuid: value.uuid)
+        ])
+    }
+
     /// Lowers a tail-recursive definition to: seed one named Shortcuts variable
     /// per parameter, `Repeat` a fixed number of times re-reading and (while a
     /// base case hasn't been reached) advancing them in place, then read back
@@ -99,10 +106,7 @@ extension FunctionCompiler {
         for parameter in signature.parameters {
             let initial = parameterOutputs[parameter.name]!
             let seeded = emitValue(.output(initial), into: &actions)
-            actions.append(ShortcutPlist.action("is.workflow.actions.setvariable", parameters: [
-                "WFVariableName": parameter.name,
-                "WFInput": ShortcutPlist.actionOutputAttachment(name: seeded.name, uuid: seeded.uuid)
-            ]))
+            actions.append(setVariable(parameter.name, to: seeded))
         }
 
         var iterationActions: [[String: Any]] = []
@@ -220,10 +224,7 @@ extension FunctionCompiler {
                     newValues.append(emitValue(compiled.value, into: &actions))
                 }
                 for (name, value) in zip(parameterNames, newValues) {
-                    actions.append(ShortcutPlist.action("is.workflow.actions.setvariable", parameters: [
-                        "WFVariableName": name,
-                        "WFInput": ShortcutPlist.actionOutputAttachment(name: value.name, uuid: value.uuid)
-                    ]))
+                    actions.append(setVariable(name, to: value))
                 }
                 return actions
 
@@ -235,10 +236,7 @@ extension FunctionCompiler {
         let compiled = try compileValue(expression, environment: environment)
         var actions = compiled.actions
         let output = emitValue(compiled.value, into: &actions)
-        actions.append(ShortcutPlist.action("is.workflow.actions.setvariable", parameters: [
-            "WFVariableName": resultVariableName,
-            "WFInput": ShortcutPlist.actionOutputAttachment(name: output.name, uuid: output.uuid)
-        ]))
+        actions.append(setVariable(resultVariableName, to: output))
         // "Stop and Output" is `is.workflow.actions.output` itself: it returns the
         // value AND halts the workflow, so a base case returns immediately instead
         // of idling through the remaining iterations. A bare

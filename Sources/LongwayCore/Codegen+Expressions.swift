@@ -34,85 +34,80 @@ extension FunctionCompiler {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
             let operands = Array(parts.dropFirst())
-            if operation == "let" || operation == "let*" {
-                return try compileLetResult(
-                    parts: parts,
-                    at: expression.location,
-                    environment: environment
+            let location = expression.location
+
+            switch operation {
+            case "let", "let*":
+                return try compileLetResult(parts: parts, at: location, environment: environment)
+            case "if":
+                return try compileIfValue(operands, at: location, environment: environment)
+            case "+", "-", "*", "/":
+                return try compileMath(operation, operands: operands, at: location, environment: environment)
+            case "=", "<", "<=", ">", ">=":
+                return try compileComparison(operation, operands: operands, at: location, environment: environment)
+            case "and", "or", "not":
+                return try compileLogical(operation, operands: operands, at: location, environment: environment)
+
+            case "list":
+                return try compileListLiteral(operands, environment: environment)
+            case "length":
+                return try compileLength(operands, at: location, environment: environment)
+            case "empty?":
+                return try compileEmpty(operands, at: location, environment: environment)
+            case "first":
+                return try compileItem(operation, specifier: "First Item", operands: operands, at: location, environment: environment)
+            case "last":
+                return try compileItem(operation, specifier: "Last Item", operands: operands, at: location, environment: environment)
+            case "list-ref":
+                return try compileListRef(operands, at: location, environment: environment)
+
+            case "dict":
+                return try compileDictionaryLiteral(operands, at: location, environment: environment)
+            case "dict-ref":
+                return try compileDictionaryRef(operands, at: location, environment: environment)
+            case "dict-set":
+                return try compileDictionarySet(operands, at: location, environment: environment)
+            case "dict-keys":
+                return try compileDictionaryContents(
+                    operation, valueType: "All Keys", name: "Dictionary Keys",
+                    operands: operands, at: location, environment: environment
                 )
-            }
-            if operation == "if" {
-                return try compileIfValue(
-                    operands,
-                    at: expression.location,
-                    environment: environment
+            case "dict-values":
+                return try compileDictionaryContents(
+                    operation, valueType: "All Values", name: "Dictionary Values",
+                    operands: operands, at: location, environment: environment
                 )
+
+            case "string-append":
+                return try compileStringAppend(operands, environment: environment)
+            case "number->text":
+                return try compileNumberToText(operands, at: location, environment: environment)
+            case "split-lines":
+                return try compileSplitText(operation, mode: nil, operands: operands, at: location, environment: environment)
+            case "split-whitespace":
+                return try compileSplitText(operation, mode: "Spaces", operands: operands, at: location, environment: environment)
+            case "split-text":
+                return try compileCustomSplit(operands, at: location, environment: environment)
+
+            case "choose-from-list":
+                return try compileChooseFromList(operands, at: location, environment: environment)
+            case "ask-text", "ask-number":
+                return try compileAsk(operation, operands: operands, at: location)
+            case "format-current-date":
+                return try compileCurrentDate(operands, at: location)
+
+            default:
+                break
             }
-            if let shortcutOperation = mathOperation(operation) {
-                return try compileMath(
-                    operation,
-                    shortcutOperation: shortcutOperation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if listOperations.contains(operation) {
-                return try compileListOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if dictionaryOperations.contains(operation) {
-                return try compileDictionaryOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if textOperations.contains(operation) {
-                return try compileTextOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if interactiveOperations.contains(operation) {
-                return try compileInteractiveOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if comparisonOperators.contains(operation) {
-                return try compileComparison(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
-            if operation == "and" || operation == "or" || operation == "not" {
-                return try compileLogical(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment
-                )
-            }
+
             if let externalAction = catalog.actions[operation] {
                 guard externalAction.result != nil else {
-                    throw LongwayError("external action '\(operation)' does not produce a value", at: expression.location)
+                    throw LongwayError("external action '\(operation)' does not produce a value", at: location)
                 }
                 let compiled = try compileExternalAction(
                     externalAction,
                     operands: operands,
-                    at: expression.location,
+                    at: location,
                     environment: environment
                 )
                 return CompiledValue(actions: compiled.actions, value: compiled.value!)
@@ -121,7 +116,7 @@ extension FunctionCompiler {
                 return try compileFunctionCall(
                     signature,
                     arguments: operands,
-                    at: expression.location,
+                    at: location,
                     environment: environment
                 )
             }
@@ -140,7 +135,7 @@ extension FunctionCompiler {
     ) throws -> CompiledValue {
         guard arguments.count == signature.parameters.count else {
             throw LongwayError(
-                functionArgumentCountMessage(
+                argumentCountMessage(
                     signature.name,
                     expected: signature.parameters.count,
                     actual: arguments.count
@@ -162,7 +157,7 @@ extension FunctionCompiler {
             }
             actions.append(contentsOf: compiledArgument.actions)
             items.append(dictionaryItem(
-                key: parameter.name,
+                key: .literalString(parameter.name),
                 value: compiledArgument.value,
                 expectedType: parameter.type
             ))
@@ -195,15 +190,15 @@ extension FunctionCompiler {
 
     func compileMath(
         _ operation: String,
-        shortcutOperation: String,
         operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
     ) throws -> CompiledValue {
         guard operands.count >= 2 else {
-            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+            throw LongwayError("\(operation) expects at least 2 arguments, got \(operands.count)", at: location)
         }
 
+        let shortcutOperation = mathOperations[operation]!
         let first = try compileValue(operands[0], environment: environment)
         guard typesAreCompatible(first.value.type, .number) else {
             throw LongwayError("\(operation) expects number operands", at: operands[0].location)
@@ -238,7 +233,7 @@ extension FunctionCompiler {
         environment: CompileEnvironment
     ) throws -> CompiledValue {
         guard operands.count >= 2 else {
-            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+            throw LongwayError("\(operation) expects at least 2 arguments, got \(operands.count)", at: location)
         }
 
         let first = try compileValue(operands[0], environment: environment)
@@ -284,9 +279,7 @@ extension FunctionCompiler {
         environment: CompileEnvironment
     ) throws -> CompiledValue {
         if operation == "not" {
-            guard operands.count == 1 else {
-                throw LongwayError("not expects 1 operand, got \(operands.count)", at: location)
-            }
+            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
             let operand = try compileValue(operands[0], environment: environment)
             try requireBoolean(operand, operation: operation, at: operands[0].location)
             return lowerConditional(
@@ -297,7 +290,7 @@ extension FunctionCompiler {
         }
 
         guard operands.count >= 2 else {
-            throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: location)
+            throw LongwayError("\(operation) expects at least 2 arguments, got \(operands.count)", at: location)
         }
         return try compileShortCircuitLogical(
             operation,

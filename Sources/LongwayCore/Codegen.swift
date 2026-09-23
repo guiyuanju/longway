@@ -234,43 +234,96 @@ struct FunctionCompiler {
         at location: SourceLocation,
         environment: CompileEnvironment
     ) throws -> (actions: [[String: Any]], environment: CompileEnvironment) {
-        let formName = parts.first?.symbol == "let*" ? "let*" : "let"
-        let isSequential = formName == "let*"
-        guard parts.count >= 3 else {
-            throw LongwayError("\(formName) expects bindings and at least one body form", at: location)
-        }
-        guard case let .list(bindings) = parts[1].value else {
-            throw LongwayError("\(formName) bindings must be a list", at: parts[1].location)
-        }
-
+        let form = try LetForm(parts, at: location)
         var actions: [[String: Any]] = []
         var bodyEnvironment = environment
         var localBindings: [String: ActionOutputReference] = [:]
-        var bindingNames = Set<String>()
-        for binding in bindings {
-            guard case let .list(pair) = binding.value, pair.count == 2 else {
-                throw LongwayError("\(formName) binding must contain a name and value", at: binding.location)
-            }
-            guard case let .symbol(name) = pair[0].value else {
-                throw LongwayError("\(formName) binding name must be a symbol", at: pair[0].location)
-            }
-            if !isSequential, !bindingNames.insert(name).inserted {
-                throw LongwayError("duplicate let binding '\(name)'", at: pair[0].location)
-            }
-            let initializerEnvironment = isSequential ? bodyEnvironment : environment
-            let compiledValue = try compileValue(pair[1], environment: initializerEnvironment)
+
+        for binding in form.bindings {
+            // A `let` initializer sees the outer scope; a `let*` initializer
+            // sees the bindings before it.
+            let initializerEnvironment = form.isSequential ? bodyEnvironment : environment
+            let compiledValue = try compileValue(binding.value, environment: initializerEnvironment)
             actions.append(contentsOf: compiledValue.actions)
             let output = materialize(compiledValue.value, into: &actions)
-            if isSequential {
-                bodyEnvironment.variables[name] = output
+            if form.isSequential {
+                bodyEnvironment.variables[binding.name] = output
             } else {
-                localBindings[name] = output
+                localBindings[binding.name] = output
             }
         }
 
-        if !isSequential {
-            bodyEnvironment.variables.merge(localBindings) { _, local in local }
-        }
+        bodyEnvironment.variables.merge(localBindings) { _, local in local }
         return (actions, bodyEnvironment)
+    }
+
+    /// Source forms that run a Shortcuts action for its effect rather than for
+    /// a value. Add new effect-only Shortcuts actions here.
+    func compileAction(
+        _ actionName: String,
+        arguments: [Expression],
+        at location: SourceLocation,
+        nameLocation: SourceLocation,
+        environment: CompileEnvironment
+    ) throws -> [[String: Any]] {
+        switch actionName {
+        case "show-result":
+            try requireArgumentCount(1, action: actionName, arguments: arguments, at: location)
+            let compiledValue = try compileValue(arguments[0], environment: environment)
+            return compiledValue.actions + showResultAction(compiledValue.value)
+
+        case "notification":
+            let value = try stringArgument(actionName, arguments: arguments, at: location)
+            return [ShortcutPlist.action("is.workflow.actions.notification", parameters: [
+                "WFNotificationActionBody": value,
+                "WFNotificationActionSound": true
+            ])]
+
+        case "open-url":
+            let value = try stringArgument(actionName, arguments: arguments, at: location)
+            guard let url = URL(string: value), url.scheme != nil else {
+                throw LongwayError("open-url expects an absolute URL", at: arguments[0].location)
+            }
+            return [
+                ShortcutPlist.action("is.workflow.actions.url", parameters: ["WFURLActionURL": value]),
+                ShortcutPlist.action("is.workflow.actions.openurl")
+            ]
+
+        case "wait":
+            try requireArgumentCount(1, action: actionName, arguments: arguments, at: location)
+            guard case let .number(seconds) = arguments[0].value else {
+                throw LongwayError("wait expects a number", at: arguments[0].location)
+            }
+            guard seconds.isFinite else {
+                throw LongwayError("wait duration must be finite", at: arguments[0].location)
+            }
+            guard seconds >= 0 else {
+                throw LongwayError("wait duration cannot be negative", at: arguments[0].location)
+            }
+            return [ShortcutPlist.action("is.workflow.actions.delay", parameters: ["WFDelayTime": seconds])]
+
+        default:
+            throw LongwayError("unknown action '\(actionName)'", at: nameLocation)
+        }
+    }
+
+    func showResultAction(_ value: CompiledValue.Value) -> [[String: Any]] {
+        [ShortcutPlist.action(
+            "is.workflow.actions.showresult",
+            parameters: ["Text": tokenString(value)],
+            uuid: nil
+        )]
+    }
+
+    func stringArgument(
+        _ action: String,
+        arguments: [Expression],
+        at location: SourceLocation
+    ) throws -> String {
+        try requireArgumentCount(1, action: action, arguments: arguments, at: location)
+        guard case let .string(value) = arguments[0].value else {
+            throw LongwayError("\(action) expects a string", at: arguments[0].location)
+        }
+        return value
     }
 }

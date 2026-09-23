@@ -173,13 +173,14 @@ struct SignatureInferrer {
         }
 
         let arguments = Array(parts.dropFirst())
-        switch formName {
-        case "show-result":
+        if formName == "show-result" {
             try requireArgumentCount(1, action: formName, arguments: arguments, at: expression.location)
             _ = try inferValue(arguments[0], environment: environment, inference: inference)
-        case "notification", "open-url", "wait":
-            break
-        default:
+            return
+        }
+        // The remaining statement forms take literal operands only, which
+        // codegen checks when it lowers them.
+        guard builtinStatementForms.contains(formName) else {
             throw LongwayError("unknown action '\(formName)'", at: head.location)
         }
     }
@@ -219,252 +220,85 @@ struct SignatureInferrer {
         environment: InferenceEnvironment,
         inference: TypeInference
     ) throws -> InferenceEnvironment {
-        let formName = parts.first?.symbol == "let*" ? "let*" : "let"
-        let isSequential = formName == "let*"
-        guard parts.count >= 3 else {
-            throw LongwayError("\(formName) expects bindings and at least one body form", at: location)
-        }
-        guard case let .list(bindings) = parts[1].value else {
-            throw LongwayError("\(formName) bindings must be a list", at: parts[1].location)
-        }
-
+        let form = try LetForm(parts, at: location)
         var bodyEnvironment = environment
         var localBindings: [String: Int] = [:]
-        var names = Set<String>()
-        for binding in bindings {
-            guard case let .list(pair) = binding.value, pair.count == 2 else {
-                throw LongwayError("\(formName) binding must contain a name and value", at: binding.location)
-            }
-            guard case let .symbol(name) = pair[0].value else {
-                throw LongwayError("\(formName) binding name must be a symbol", at: pair[0].location)
-            }
-            if !isSequential, !names.insert(name).inserted {
-                throw LongwayError("duplicate let binding '\(name)'", at: pair[0].location)
-            }
-            let initializerEnvironment = isSequential ? bodyEnvironment : environment
-            let value = try inferValue(pair[1], environment: initializerEnvironment, inference: inference)
-            if isSequential {
-                bodyEnvironment.variables[name] = value
+
+        for binding in form.bindings {
+            // A `let` initializer sees the outer scope; a `let*` initializer
+            // sees the bindings before it.
+            let initializerEnvironment = form.isSequential ? bodyEnvironment : environment
+            let value = try inferValue(
+                binding.value,
+                environment: initializerEnvironment,
+                inference: inference
+            )
+            if form.isSequential {
+                bodyEnvironment.variables[binding.name] = value
             } else {
-                localBindings[name] = value
+                localBindings[binding.name] = value
             }
         }
 
-        if !isSequential {
-            bodyEnvironment.variables.merge(localBindings) { _, local in local }
-        }
+        bodyEnvironment.variables.merge(localBindings) { _, local in local }
         return bodyEnvironment
     }
 
-    /// List elements are untyped, so every read returns a fresh unconstrained
-    /// variable that whatever consumes it may bind. Only the list operand and
-    /// `list-ref`'s index carry constraints.
-    private func inferListOperation(
+    /// Checks one built-in call against its declared signature: the arity and
+    /// operand types come from the `builtins` table, so this is the only place
+    /// inference needs to know how any of them are used. Forms whose result is
+    /// `.any` answer a fresh unconstrained variable, which is what makes a list
+    /// element or a dictionary value take its type from whatever reads it.
+    private func inferBuiltin(
         _ operation: String,
+        _ builtin: Builtin,
         operands: [Expression],
         at location: SourceLocation,
         environment: InferenceEnvironment,
         inference: TypeInference
     ) throws -> Int {
-        if operation == "list" {
-            for operand in operands {
-                let element = try inferValue(operand, environment: environment, inference: inference)
-                if let bound = inference.boundType(element), bound == .list || bound == .dictionary {
-                    throw LongwayError("list elements cannot be \(bound.pluralName)", at: operand.location)
-                }
+        let expected = try builtin.operands.check(operation, operands: operands, at: location)
+        var variables: [Int] = []
+        for (operand, rule) in zip(operands, expected) {
+            let variable = try inferValue(operand, environment: environment, inference: inference)
+            if rule.type != .any {
+                try inference.constrain(
+                    variable,
+                    to: rule.type,
+                    message: "\(operation) \(rule.expectation)",
+                    at: operand.location
+                )
             }
-            return inference.makeVariable(boundTo: .list)
+            variables.append(variable)
         }
-
-        try requireArgumentCount(
-            operation == "list-ref" ? 2 : 1,
-            action: operation,
-            arguments: operands,
-            at: location
-        )
-        let list = try inferValue(operands[0], environment: environment, inference: inference)
-        try inference.constrain(
-            list,
-            to: .list,
-            message: "\(operation) expects a list",
-            at: operands[0].location
-        )
-        if operation == "list-ref" {
-            let index = try inferValue(operands[1], environment: environment, inference: inference)
-            try inference.constrain(
-                index,
-                to: .number,
-                message: "list-ref expects a number index",
-                at: operands[1].location
-            )
-        }
-
-        switch operation {
-        case "length":
-            return inference.makeVariable(boundTo: .number)
-        case "empty?":
-            return inference.makeVariable(boundTo: .boolean)
-        default:
-            return inference.makeVariable()
-        }
+        try checkContainerRules(operation, operands: operands, variables: variables, inference: inference)
+        return builtin.result == .any
+            ? inference.makeVariable()
+            : inference.makeVariable(boundTo: builtin.result)
     }
 
-    /// Dictionary values are untyped in the same way list elements are, so a
-    /// `dict-ref` returns a fresh unconstrained variable. Keys are always text.
-    private func inferDictionaryOperation(
+    /// The rules a plain type signature cannot express. A `WFItems` entry
+    /// flattens a list to newline-joined text and a dictionary to JSON, so
+    /// neither can be stored in one.
+    private func checkContainerRules(
         _ operation: String,
         operands: [Expression],
-        at location: SourceLocation,
-        environment: InferenceEnvironment,
+        variables: [Int],
         inference: TypeInference
-    ) throws -> Int {
-        if operation == "dict" {
-            guard operands.count.isMultiple(of: 2) else {
-                throw LongwayError(
-                    "dict expects alternating keys and values, got \(operands.count) forms",
-                    at: location
-                )
+    ) throws {
+        switch operation {
+        case "list":
+            for (operand, variable) in zip(operands, variables) {
+                guard let bound = inference.boundType(variable),
+                      bound == .list || bound == .dictionary
+                else { continue }
+                throw LongwayError("list elements cannot be \(bound.pluralName)", at: operand.location)
             }
-            for pair in stride(from: 0, to: operands.count, by: 2) {
-                let key = try inferValue(operands[pair], environment: environment, inference: inference)
-                try inference.constrain(
-                    key,
-                    to: .text,
-                    message: "dict expects a text key",
-                    at: operands[pair].location
-                )
-                _ = try inferValue(operands[pair + 1], environment: environment, inference: inference)
-            }
-            return inference.makeVariable(boundTo: .dictionary)
-        }
-
-        try requireArgumentCount(
-            ["dict-set": 3, "dict-ref": 2][operation] ?? 1,
-            action: operation,
-            arguments: operands,
-            at: location
-        )
-        let dictionary = try inferValue(operands[0], environment: environment, inference: inference)
-        try inference.constrain(
-            dictionary,
-            to: .dictionary,
-            message: "\(operation) expects a dictionary",
-            at: operands[0].location
-        )
-        if operation == "dict-keys" || operation == "dict-values" {
-            return inference.makeVariable(boundTo: .list)
-        }
-
-        let key = try inferValue(operands[1], environment: environment, inference: inference)
-        try inference.constrain(
-            key,
-            to: .text,
-            message: "\(operation) expects a text key",
-            at: operands[1].location
-        )
-        if operation == "dict-ref" {
-            return inference.makeVariable()
-        }
-
-        let value = try inferValue(operands[2], environment: environment, inference: inference)
-        if let bound = inference.boundType(value) {
+        case "dict-set":
+            guard let bound = inference.boundType(variables[2]) else { return }
             try requireStorableInDictionaryField(bound, at: operands[2].location)
-        }
-        return inference.makeVariable(boundTo: .dictionary)
-    }
-
-    private func inferTextOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: InferenceEnvironment,
-        inference: TypeInference
-    ) throws -> Int {
-        switch operation {
-        case "string-append":
-            for operand in operands {
-                let value = try inferValue(operand, environment: environment, inference: inference)
-                try inference.constrain(
-                    value,
-                    to: .text,
-                    message: "string-append expects text operands",
-                    at: operand.location
-                )
-            }
-        case "number->text":
-            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
-            let value = try inferValue(operands[0], environment: environment, inference: inference)
-            try inference.constrain(
-                value,
-                to: .number,
-                message: "number->text expects a number",
-                at: operands[0].location
-            )
-        case "split-lines", "split-whitespace":
-            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
-            let value = try inferValue(operands[0], environment: environment, inference: inference)
-            try inference.constrain(
-                value,
-                to: .text,
-                message: "\(operation) expects text",
-                at: operands[0].location
-            )
-            return inference.makeVariable(boundTo: .list)
-        case "split-text":
-            try requireArgumentCount(2, action: operation, arguments: operands, at: location)
-            for operand in operands {
-                let value = try inferValue(operand, environment: environment, inference: inference)
-                try inference.constrain(
-                    value,
-                    to: .text,
-                    message: "split-text expects text operands",
-                    at: operand.location
-                )
-            }
-            return inference.makeVariable(boundTo: .list)
         default:
-            preconditionFailure("unknown text operation")
-        }
-        return inference.makeVariable(boundTo: .text)
-    }
-
-    private func inferInteractiveOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: InferenceEnvironment,
-        inference: TypeInference
-    ) throws -> Int {
-        switch operation {
-        case "choose-from-list":
-            try requireArgumentCount(2, action: operation, arguments: operands, at: location)
-            let list = try inferValue(operands[0], environment: environment, inference: inference)
-            try inference.constrain(
-                list,
-                to: .list,
-                message: "choose-from-list expects a list",
-                at: operands[0].location
-            )
-            let prompt = try inferValue(operands[1], environment: environment, inference: inference)
-            try inference.constrain(
-                prompt,
-                to: .text,
-                message: "choose-from-list expects a text prompt",
-                at: operands[1].location
-            )
-            return inference.makeVariable()
-        case "ask-text", "ask-number", "format-current-date":
-            try requireArgumentCount(1, action: operation, arguments: operands, at: location)
-            let text = try inferValue(operands[0], environment: environment, inference: inference)
-            try inference.constrain(
-                text,
-                to: .text,
-                message: "\(operation) expects text",
-                at: operands[0].location
-            )
-            return inference.makeVariable(boundTo: operation == "ask-number" ? .number : .text)
-        default:
-            preconditionFailure("unknown interactive operation")
+            return
         }
     }
 
@@ -504,6 +338,7 @@ struct SignatureInferrer {
             : inference.makeVariable(boundTo: result.type)
     }
 
+
     private func inferValue(
         _ expression: Expression,
         environment: InferenceEnvironment,
@@ -526,6 +361,7 @@ struct SignatureInferrer {
                 throw LongwayError("expected a value expression", at: expression.location)
             }
             let operands = Array(parts.dropFirst())
+
             if operation == "let" || operation == "let*" {
                 let prepared = try inferLetBindings(
                     parts: parts,
@@ -558,99 +394,15 @@ struct SignatureInferrer {
                 )
                 return trueType
             }
-            if mathOperation(operation) != nil {
-                guard operands.count >= 2 else {
-                    throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: expression.location)
-                }
-                for operand in operands {
-                    let type = try inferValue(operand, environment: environment, inference: inference)
-                    try inference.constrain(
-                        type,
-                        to: .number,
-                        message: "\(operation) expects number operands",
-                        at: operand.location
-                    )
-                }
-                return inference.makeVariable(boundTo: .number)
-            }
-            if listOperations.contains(operation) {
-                return try inferListOperation(
+            if let builtin = builtins[operation] {
+                return try inferBuiltin(
                     operation,
+                    builtin,
                     operands: operands,
                     at: expression.location,
                     environment: environment,
                     inference: inference
                 )
-            }
-            if dictionaryOperations.contains(operation) {
-                return try inferDictionaryOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment,
-                    inference: inference
-                )
-            }
-            if textOperations.contains(operation) {
-                return try inferTextOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment,
-                    inference: inference
-                )
-            }
-            if interactiveOperations.contains(operation) {
-                return try inferInteractiveOperation(
-                    operation,
-                    operands: operands,
-                    at: expression.location,
-                    environment: environment,
-                    inference: inference
-                )
-            }
-            if comparisonOperators.contains(operation) {
-                guard operands.count >= 2 else {
-                    throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: expression.location)
-                }
-                for operand in operands {
-                    let type = try inferValue(operand, environment: environment, inference: inference)
-                    try inference.constrain(
-                        type,
-                        to: .number,
-                        message: "\(operation) expects number operands",
-                        at: operand.location
-                    )
-                }
-                return inference.makeVariable(boundTo: .boolean)
-            }
-            if operation == "not" {
-                guard operands.count == 1 else {
-                    throw LongwayError("not expects 1 operand, got \(operands.count)", at: expression.location)
-                }
-                let type = try inferValue(operands[0], environment: environment, inference: inference)
-                try inference.constrain(
-                    type,
-                    to: .boolean,
-                    message: "not expects boolean operands",
-                    at: operands[0].location
-                )
-                return inference.makeVariable(boundTo: .boolean)
-            }
-            if operation == "and" || operation == "or" {
-                guard operands.count >= 2 else {
-                    throw LongwayError("\(operation) expects at least 2 operands, got \(operands.count)", at: expression.location)
-                }
-                for operand in operands {
-                    let type = try inferValue(operand, environment: environment, inference: inference)
-                    try inference.constrain(
-                        type,
-                        to: .boolean,
-                        message: "\(operation) expects boolean operands",
-                        at: operand.location
-                    )
-                }
-                return inference.makeVariable(boundTo: .boolean)
             }
             if let externalAction = catalog.actions[operation] {
                 return try inferExternalAction(
@@ -665,7 +417,7 @@ struct SignatureInferrer {
             if let function = environment.functions[operation] {
                 guard operands.count == function.parameters.count else {
                     throw LongwayError(
-                        functionArgumentCountMessage(
+                        argumentCountMessage(
                             operation,
                             expected: function.parameters.count,
                             actual: operands.count
@@ -691,6 +443,7 @@ struct SignatureInferrer {
             throw LongwayError("unknown value form '\(operation)'", at: head.location)
         }
     }
+
 }
 
 /// Union-find over type variables. `constrain` binds a variable to a concrete type;
