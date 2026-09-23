@@ -2,81 +2,99 @@ import Foundation
 
 /// Turns a `CompiledValue.Value` into a referenceable action output, or into the
 /// raw plist shape a particular consumer (dictionary item, output parameter,
-/// math operand, ...) expects. `materialize*` always emits an action so the
-/// result is UUID-referenceable; `emit*` additionally forces a specific runtime
-/// type so Shortcuts imports a typed conditional/output correctly.
+/// math operand, …) expects.
+///
+/// Two families do the referencing. `materialize*` reuses an action output that
+/// Shortcuts already produces with the wanted runtime type, and only emits an
+/// action when it has to. `emit*` always emits, which callers need when
+/// Shortcuts must see a definitely-typed producer action - a conditional
+/// branch's result, or a tail-loop variable.
 extension FunctionCompiler {
+    /// The token string every Shortcuts text-shaped field accepts: a literal,
+    /// or a reference to another action's output. Booleans travel as the text
+    /// `#t`/`#f`, which is how Longway represents them throughout.
+    func tokenString(_ value: CompiledValue.Value) -> [String: Any] {
+        switch value {
+        case let .literalString(string):
+            ShortcutPlist.textTokenString(string)
+        case let .literalNumber(number):
+            ShortcutPlist.textTokenString(ShortcutPlist.formatNumber(number))
+        case let .literalBoolean(boolean):
+            ShortcutPlist.textTokenString(boolean ? "#t" : "#f")
+        case let .output(output):
+            ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
+        }
+    }
+
+    /// Makes `value` referenceable by UUID without changing its type. An action
+    /// output already is one.
     func materialize(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
         switch value {
-        case let .literalString(text):
-            return emitText(ShortcutPlist.textTokenString(text), type: .text, into: &actions)
-
-        case .literalNumber:
-            return materializeNumber(value, into: &actions)
-
-        case .literalBoolean:
-            return materializeBoolean(value, into: &actions)
-
         case let .output(output):
             return output
+        case .literalString:
+            return emitText(tokenString(value), type: .text, into: &actions)
+        case .literalNumber:
+            return materializeNumber(value, into: &actions)
+        case .literalBoolean:
+            return materializeBoolean(value, into: &actions)
         }
+    }
+
+    func materializeNumber(
+        _ value: CompiledValue.Value,
+        into actions: inout [[String: Any]]
+    ) -> ActionOutputReference {
+        reuseRuntimeTyped(value, as: .number) ?? emitNumber(value, into: &actions)
     }
 
     func materializeBoolean(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
-        switch value {
-        case let .literalBoolean(boolean):
-            return emitText(ShortcutPlist.textTokenString(boolean ? "#t" : "#f"), type: .boolean, into: &actions)
-        case let .output(output):
-            precondition(typesAreCompatible(output.type, .boolean))
-            if output.isRuntimeTyped {
-                return ActionOutputReference(type: .boolean, name: output.name, uuid: output.uuid)
-            }
-            return emitText(
-                ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid),
-                type: .boolean,
-                into: &actions
-            )
-        case .literalString, .literalNumber:
-            preconditionFailure("non-boolean value cannot be materialized as a boolean")
-        }
+        reuseRuntimeTyped(value, as: .boolean) ?? emitBoolean(value, into: &actions)
     }
 
+    /// An action output that Shortcuts already produces with `type` needs no
+    /// coercing action; it only needs to be re-labelled with that type.
+    private func reuseRuntimeTyped(
+        _ value: CompiledValue.Value,
+        as type: ValueType
+    ) -> ActionOutputReference? {
+        guard case let .output(output) = value, output.isRuntimeTyped else { return nil }
+        precondition(typesAreCompatible(output.type, type))
+        return ActionOutputReference(type: type, name: output.name, uuid: output.uuid)
+    }
+
+    /// Re-publishes `value` through a fresh action of its own type. Text,
+    /// numbers, and Booleans get a producer action that fixes their runtime
+    /// type; everything else goes through Get Variable, which carries the
+    /// runtime value across unchanged - passing a list or a dictionary through
+    /// Text or Number would flatten it to newline-joined text or to JSON.
     func emitValue(
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
-        switch value {
-        case let .literalString(text):
-            return emitText(ShortcutPlist.textTokenString(text), type: .text, into: &actions)
-        case .literalNumber:
+        switch value.type {
+        case .text:
+            return emitText(tokenString(value), type: .text, into: &actions)
+        case .number:
             return emitNumber(value, into: &actions)
-        case .literalBoolean:
+        case .boolean:
             return emitBoolean(value, into: &actions)
-        case let .output(output):
-            switch output.type {
-            case .text:
-                return emitText(
-                    ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid),
-                    type: .text,
-                    into: &actions
-                )
-            case .number:
-                return emitNumber(value, into: &actions)
-            case .boolean:
-                return emitBoolean(value, into: &actions)
-            case .list:
-                return emitPassthrough(output, type: .list, name: "List", into: &actions)
-            case .dictionary:
-                return emitPassthrough(output, type: .dictionary, name: "Dictionary", into: &actions)
-            case .any:
-                return emitGeneric(output, into: &actions)
+        case .list, .dictionary, .any:
+            guard case let .output(output) = value else {
+                preconditionFailure("a list, dictionary, or generic value is always an action output")
             }
+            let name = switch value.type {
+            case .list: "List"
+            case .dictionary: "Dictionary"
+            default: "Value"
+            }
+            return emitPassthrough(output, type: value.type, name: name, into: &actions)
         }
     }
 
@@ -84,45 +102,8 @@ extension FunctionCompiler {
         _ value: CompiledValue.Value,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
-        switch value {
-        case let .literalBoolean(boolean):
-            return emitText(ShortcutPlist.textTokenString(boolean ? "#t" : "#f"), type: .boolean, into: &actions)
-        case let .output(output):
-            precondition(typesAreCompatible(output.type, .boolean))
-            return emitText(
-                ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid),
-                type: .boolean,
-                into: &actions
-            )
-        case .literalString, .literalNumber:
-            preconditionFailure("non-boolean value cannot be emitted as a boolean")
-        }
-    }
-
-    func emitGeneric(
-        _ output: ActionOutputReference,
-        into actions: inout [[String: Any]]
-    ) -> ActionOutputReference {
-        emitPassthrough(output, type: .any, name: "Value", into: &actions)
-    }
-
-    /// Re-publishes a value under a fresh UUID without coercing it. Values that
-    /// have no typed producer action - generic ones, and lists and dictionaries,
-    /// which Shortcuts would flatten to newline-joined text and to JSON if
-    /// passed through Text or Number - go through Get Variable, which carries
-    /// the runtime value across unchanged.
-    func emitPassthrough(
-        _ output: ActionOutputReference,
-        type: ValueType,
-        name: String,
-        into actions: inout [[String: Any]]
-    ) -> ActionOutputReference {
-        let uuid = UUID().uuidString
-        actions.append(ShortcutPlist.action("is.workflow.actions.getvariable", parameters: [
-            "CustomOutputName": name,
-            "WFVariable": ShortcutPlist.actionOutputAttachment(name: output.name, uuid: output.uuid)
-        ], uuid: uuid))
-        return ActionOutputReference(type: type, name: name, uuid: uuid)
+        precondition(typesAreCompatible(value.type, .boolean))
+        return emitText(tokenString(value), type: .boolean, into: &actions)
     }
 
     func emitText(
@@ -148,24 +129,18 @@ extension FunctionCompiler {
         return ActionOutputReference(type: .number, name: "Number", uuid: uuid)
     }
 
-    func materializeNumber(
-        _ value: CompiledValue.Value,
+    func emitPassthrough(
+        _ output: ActionOutputReference,
+        type: ValueType,
+        name: String,
         into actions: inout [[String: Any]]
     ) -> ActionOutputReference {
-        switch value {
-        case .literalNumber:
-            return emitNumber(value, into: &actions)
-
-        case let .output(output):
-            precondition(typesAreCompatible(output.type, .number))
-            if output.isRuntimeTyped {
-                return ActionOutputReference(type: .number, name: output.name, uuid: output.uuid)
-            }
-            return emitNumber(value, into: &actions)
-
-        case .literalString, .literalBoolean:
-            preconditionFailure("non-number value cannot be materialized as a number")
-        }
+        let uuid = UUID().uuidString
+        actions.append(ShortcutPlist.action("is.workflow.actions.getvariable", parameters: [
+            "CustomOutputName": name,
+            "WFVariable": ShortcutPlist.actionOutputAttachment(name: output.name, uuid: output.uuid)
+        ], uuid: uuid))
+        return ActionOutputReference(type: type, name: name, uuid: uuid)
     }
 
     func numberParameter(_ value: CompiledValue.Value) -> Any {
@@ -180,24 +155,15 @@ extension FunctionCompiler {
     }
 
     /// Stop and Output carries a list the same way it carries any other value:
-    /// one attachment filling the whole token string. The Shortcuts editor
-    /// writes exactly this for a List variable, so a list result needs no
-    /// special encoding here.
+    /// one attachment filling the whole token string. A bare number literal is
+    /// published through a Number action first so the workflow returns a real
+    /// number rather than its text.
     func outputParameter(
         _ value: CompiledValue.Value,
         actions: inout [[String: Any]]
     ) -> [String: Any] {
-        switch value {
-        case let .literalString(string):
-            return ShortcutPlist.textTokenString(string)
-        case let .literalBoolean(boolean):
-            return ShortcutPlist.textTokenString(boolean ? "#t" : "#f")
-        case .literalNumber:
-            let output = emitNumber(value, into: &actions)
-            return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
-        case let .output(output):
-            return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
-        }
+        guard case .literalNumber = value else { return tokenString(value) }
+        return tokenString(.output(emitNumber(value, into: &actions)))
     }
 
     /// One `WFItems` entry of a List action. `WFItems` is a `WFContentArrayParameter`,
@@ -214,21 +180,9 @@ extension FunctionCompiler {
             return ShortcutPlist.formatNumber(number)
         case let .literalBoolean(boolean):
             return boolean ? "#t" : "#f"
-        case let .output(output):
-            return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
+        case .output:
+            return tokenString(value)
         }
-    }
-
-    func dictionaryItem(
-        key: String,
-        value: CompiledValue.Value,
-        expectedType: ValueType
-    ) -> [String: Any] {
-        dictionaryItem(
-            keyToken: ShortcutPlist.textTokenString(key),
-            value: value,
-            expectedType: expectedType
-        )
     }
 
     /// One `WFDictionaryFieldValueItems` entry. `WFItemType` is WorkflowKit's
@@ -238,48 +192,30 @@ extension FunctionCompiler {
     /// JSON. Booleans stay text because Longway represents them as `#t`/`#f`
     /// rather than as Shortcuts Booleans.
     func dictionaryItem(
-        keyToken: [String: Any],
+        key: CompiledValue.Value,
         value: CompiledValue.Value,
         expectedType: ValueType
     ) -> [String: Any] {
+        let keyToken = tokenString(key)
         switch expectedType == .any ? value.type : expectedType {
-        case .list:
+        case .list, .dictionary:
             guard case let .output(output) = value else {
-                preconditionFailure("a list value is always an action output")
+                preconditionFailure("a list or dictionary value is always an action output")
             }
+            let isList = (expectedType == .any ? value.type : expectedType) == .list
             return [
-                "WFItemType": 2,
+                "WFItemType": isList ? 2 : 1,
                 "WFKey": keyToken,
-                "WFValue": ShortcutPlist.arrayParameterState(name: output.name, uuid: output.uuid)
-            ]
-        case .dictionary:
-            guard case let .output(output) = value else {
-                preconditionFailure("a dictionary value is always an action output")
-            }
-            return [
-                "WFItemType": 1,
-                "WFKey": keyToken,
-                "WFValue": ShortcutPlist.dictionaryParameterState(name: output.name, uuid: output.uuid)
+                "WFValue": isList
+                    ? ShortcutPlist.arrayParameterState(name: output.name, uuid: output.uuid)
+                    : ShortcutPlist.dictionaryParameterState(name: output.name, uuid: output.uuid)
             ]
         case let valueType:
             return [
                 "WFItemType": valueType == .number ? 3 : 0,
                 "WFKey": keyToken,
-                "WFValue": dictionaryValue(value)
+                "WFValue": tokenString(value)
             ]
-        }
-    }
-
-    func dictionaryValue(_ value: CompiledValue.Value) -> [String: Any] {
-        switch value {
-        case let .literalString(string):
-            ShortcutPlist.textTokenString(string)
-        case let .literalNumber(number):
-            ShortcutPlist.textTokenString(ShortcutPlist.formatNumber(number))
-        case let .literalBoolean(boolean):
-            ShortcutPlist.textTokenString(boolean ? "#t" : "#f")
-        case let .output(output):
-            ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
         }
     }
 }

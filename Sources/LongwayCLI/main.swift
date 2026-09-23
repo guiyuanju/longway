@@ -20,14 +20,15 @@ struct LongwayCommand {
             printHelp()
             return
         }
+        let rest = Array(arguments.dropFirst())
 
         switch command {
         case "build":
-            try build(Array(arguments.dropFirst()))
+            try build(rest)
         case "check":
-            try check(Array(arguments.dropFirst()))
+            try check(rest)
         case "inspect-actions":
-            try inspectActions(Array(arguments.dropFirst()))
+            try inspectActions(rest)
         case "help", "--help", "-h":
             printHelp()
         case "version", "--version":
@@ -38,127 +39,61 @@ struct LongwayCommand {
     }
 
     private static func build(_ arguments: [String]) throws {
-        var inputPath: String?
-        var outputPath: String?
-        var format: PropertyListSerialization.PropertyListFormat = .binary
-        var signingMode: String?
-        var actionCatalogPaths: [String] = []
-        var index = 0
+        let options = try Options(
+            arguments,
+            command: "build",
+            flags: ["xml", "sign"],
+            valued: ["output", "actions"],
+            usage: "usage: longway build <file.longway> [-o directory] [--xml] "
+                + "[--actions catalog.json]… [--sign[=anyone|people-who-know-me]]"
+        )
 
-        while index < arguments.count {
-            let argument = arguments[index]
-            switch argument {
-            case "-o", "--output":
-                index += 1
-                guard index < arguments.count else {
-                    throw CLIError("\(argument) requires a path")
-                }
-                outputPath = arguments[index]
-            case "--xml":
-                format = .xml
-            case "--actions":
-                index += 1
-                guard index < arguments.count else {
-                    throw CLIError("--actions requires a JSON catalog path")
-                }
-                actionCatalogPaths.append(arguments[index])
-            case "--sign":
-                signingMode = "people-who-know-me"
-                if index + 1 < arguments.count, ["anyone", "people-who-know-me"].contains(arguments[index + 1]) {
-                    index += 1
-                    signingMode = arguments[index]
-                }
-            default:
-                if argument.hasPrefix("--sign=") {
-                    signingMode = String(argument.dropFirst("--sign=".count))
-                } else if argument.hasPrefix("--actions=") {
-                    actionCatalogPaths.append(String(argument.dropFirst("--actions=".count)))
-                } else if argument.hasPrefix("-") {
-                    throw CLIError("unknown option '\(argument)'")
-                } else if inputPath == nil {
-                    inputPath = argument
-                } else {
-                    throw CLIError("build accepts one input file")
-                }
-            }
-            index += 1
-        }
-
-        guard let inputPath else {
-            throw CLIError("build requires an input file")
-        }
+        let signingMode = options.value("sign") ?? (options.has("sign") ? "people-who-know-me" : nil)
         if let signingMode, !["anyone", "people-who-know-me"].contains(signingMode) {
             throw CLIError("signing mode must be 'anyone' or 'people-who-know-me'")
         }
 
-        let inputURL = URL(fileURLWithPath: inputPath)
-        let destination = outputPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let inputURL = URL(fileURLWithPath: options.input)
+        let destination = options.value("output").map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? inputURL.deletingPathExtension().appendingPathExtension("shortcuts")
         let compiled = try compileFile(
             inputURL,
-            format: format,
-            actionCatalogPaths: actionCatalogPaths
+            format: options.has("xml") ? .xml : .binary,
+            actionCatalogPaths: options.all("actions")
         )
+
+        // Sign the whole program before replacing anything on disk, so a
+        // failure partway through leaves the destination as it was.
         let artifacts = try compiled.shortcuts.map { shortcut in
-            let data = try signingMode.map { try sign(shortcut.data, mode: $0) } ?? shortcut.data
-            return (shortcut, data)
+            (shortcut, try signingMode.map { try sign(shortcut.data, mode: $0) } ?? shortcut.data)
         }
-
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) {
-            guard isDirectory.boolValue else {
-                throw CLIError("output path must be a directory")
-            }
-        } else {
-            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-        }
-
+        try prepareDirectory(destination)
         for (shortcut, data) in artifacts {
-            let outputURL = destination
-                .appendingPathComponent(shortcut.name)
-                .appendingPathExtension("shortcut")
-            try data.write(to: outputURL, options: .atomic)
+            try data.write(
+                to: destination.appendingPathComponent(shortcut.name).appendingPathExtension("shortcut"),
+                options: .atomic
+            )
         }
+
         let actionCount = compiled.shortcuts.reduce(0) { $0 + $1.actionCount }
-        let signingDescription = signingMode == nil ? "unsigned" : "signed"
         let noun = compiled.shortcuts.count == 1 ? "function Shortcut" : "function Shortcuts"
         print(
-            "Built \(compiled.shortcuts.count) \(signingDescription) \(noun) in " +
-            "\(destination.path) (\(actionCount) Shortcut actions)"
+            "Built \(compiled.shortcuts.count) \(signingMode == nil ? "unsigned" : "signed") \(noun) in "
+            + "\(destination.path) (\(actionCount) Shortcut actions)"
         )
     }
 
     private static func check(_ arguments: [String]) throws {
-        var inputPath: String?
-        var actionCatalogPaths: [String] = []
-        var index = 0
-        while index < arguments.count {
-            let argument = arguments[index]
-            if argument == "--actions" {
-                index += 1
-                guard index < arguments.count else {
-                    throw CLIError("--actions requires a JSON catalog path")
-                }
-                actionCatalogPaths.append(arguments[index])
-            } else if argument.hasPrefix("--actions=") {
-                actionCatalogPaths.append(String(argument.dropFirst("--actions=".count)))
-            } else if argument.hasPrefix("-") {
-                throw CLIError("unknown option '\(argument)'")
-            } else if inputPath == nil {
-                inputPath = argument
-            } else {
-                throw CLIError("check accepts one input file")
-            }
-            index += 1
-        }
-        guard let inputPath else {
-            throw CLIError("usage: longway check <file.longway> [--actions catalog.json]")
-        }
+        let options = try Options(
+            arguments,
+            command: "check",
+            valued: ["actions"],
+            usage: "usage: longway check <file.longway> [--actions catalog.json]…"
+        )
         let compiled = try compileFile(
-            URL(fileURLWithPath: inputPath),
+            URL(fileURLWithPath: options.input),
             format: .binary,
-            actionCatalogPaths: actionCatalogPaths
+            actionCatalogPaths: options.all("actions")
         )
         let actionCount = compiled.shortcuts.reduce(0) { $0 + $1.actionCount }
         let names = compiled.shortcuts.map(\.name).joined(separator: ", ")
@@ -167,38 +102,15 @@ struct LongwayCommand {
     }
 
     private static func inspectActions(_ arguments: [String]) throws {
-        var inputPath: String?
-        var outputPath: String?
-        var thirdPartyOnly = false
-        var index = 0
-
-        while index < arguments.count {
-            let argument = arguments[index]
-            switch argument {
-            case "-o", "--output":
-                index += 1
-                guard index < arguments.count else {
-                    throw CLIError("\(argument) requires a directory")
-                }
-                outputPath = arguments[index]
-            case "--third-party-only":
-                thirdPartyOnly = true
-            default:
-                if argument.hasPrefix("-") {
-                    throw CLIError("unknown option '\(argument)'")
-                } else if inputPath == nil {
-                    inputPath = argument
-                } else {
-                    throw CLIError("inspect-actions accepts one input file")
-                }
-            }
-            index += 1
-        }
-
-        guard let inputPath else {
-            throw CLIError("usage: longway inspect-actions <file.shortcut> [-o directory] [--third-party-only]")
-        }
-        let actions = try ShortcutActionExtractor().extract(from: URL(fileURLWithPath: inputPath))
+        let options = try Options(
+            arguments,
+            command: "inspect-actions",
+            flags: ["third-party-only"],
+            valued: ["output"],
+            usage: "usage: longway inspect-actions <file.shortcut> [-o directory] [--third-party-only]"
+        )
+        let thirdPartyOnly = options.has("third-party-only")
+        let actions = try ShortcutActionExtractor().extract(from: URL(fileURLWithPath: options.input))
         let selected = thirdPartyOnly
             ? actions.filter { !$0.identifier.hasPrefix("is.workflow.actions.") }
             : actions
@@ -207,35 +119,23 @@ struct LongwayCommand {
             print(String(format: "%02d  %@", action.index, action.identifier))
         }
 
-        guard let outputPath else {
-            let qualifier = thirdPartyOnly ? " third-party" : ""
-            print("Found \(selected.count)\(qualifier) actions")
+        guard let outputPath = options.value("output") else {
+            print("Found \(selected.count)\(thirdPartyOnly ? " third-party" : "") actions")
             return
         }
 
+        // Extracted parameters can hold private workflow data, so this never
+        // writes into a directory that already has something in it.
         let outputURL = URL(fileURLWithPath: outputPath, isDirectory: true)
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: outputURL.path, isDirectory: &isDirectory) {
-            guard isDirectory.boolValue else {
-                throw CLIError("output path must be a directory")
-            }
-            guard try fileManager.contentsOfDirectory(atPath: outputURL.path).isEmpty else {
-                throw CLIError("output directory must be empty")
-            }
-        } else {
-            try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
-        }
-
+        try prepareDirectory(outputURL, mustBeEmpty: true)
         for action in selected {
             let safeIdentifier = action.identifier.replacingOccurrences(
                 of: "[^A-Za-z0-9._-]",
                 with: "-",
                 options: .regularExpression
             )
-            let filename = String(format: "%02d-%@.plist", action.index, safeIdentifier)
             try action.propertyListData.write(
-                to: outputURL.appendingPathComponent(filename),
+                to: outputURL.appendingPathComponent(String(format: "%02d-%@.plist", action.index, safeIdentifier)),
                 options: .atomic
             )
         }
@@ -245,7 +145,7 @@ struct LongwayCommand {
     private static func compileFile(
         _ inputURL: URL,
         format: PropertyListSerialization.PropertyListFormat,
-        actionCatalogPaths: [String] = []
+        actionCatalogPaths: [String]
     ) throws -> CompiledProgram {
         let source: String
         do {
@@ -255,16 +155,27 @@ struct LongwayCommand {
         }
 
         do {
-            let catalog = try ActionCatalog(
-                contentsOf: actionCatalogPaths.map { URL(fileURLWithPath: $0) }
-            )
-            return try LongwayCompiler().compileProgram(
-                source,
-                format: format,
-                catalog: catalog
-            )
+            let catalog = try ActionCatalog(contentsOf: actionCatalogPaths.map { URL(fileURLWithPath: $0) })
+            return try LongwayCompiler().compileProgram(source, format: format, catalog: catalog)
         } catch let error as LongwayError {
             throw CLIError("\(inputURL.path):\(error.description)")
+        }
+    }
+
+    /// Creates `directory` when it is missing, and refuses a path that already
+    /// exists as something other than a (optionally empty) directory.
+    private static func prepareDirectory(_ directory: URL, mustBeEmpty: Bool = false) throws {
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            return
+        }
+        guard isDirectory.boolValue else {
+            throw CLIError("output path must be a directory")
+        }
+        guard try !mustBeEmpty || fileManager.contentsOfDirectory(atPath: directory.path).isEmpty else {
+            throw CLIError("output directory must be empty")
         }
     }
 
@@ -279,13 +190,22 @@ struct LongwayCommand {
         let signedURL = temporaryDirectory.appendingPathComponent("signed.shortcut")
         try data.write(to: unsignedURL)
 
+        try runTool(
+            "/usr/bin/shortcuts",
+            arguments: ["sign", "--mode", mode, "--input", unsignedURL.path, "--output", signedURL.path],
+            failure: { "signing failed\($0). Try building without --sign." }
+        )
+        return try Data(contentsOf: signedURL)
+    }
+
+    private static func runTool(
+        _ executable: String,
+        arguments: [String],
+        failure: (String) -> String
+    ) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-        process.arguments = [
-            "sign", "--mode", mode,
-            "--input", unsignedURL.path,
-            "--output", signedURL.path
-        ]
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
         let errorPipe = Pipe()
         process.standardError = errorPipe
         process.standardOutput = Pipe()
@@ -294,17 +214,15 @@ struct LongwayCommand {
             try process.run()
             process.waitUntilExit()
         } catch {
-            throw CLIError("could not launch Apple’s shortcuts signer: \(error.localizedDescription)")
+            throw CLIError("could not launch \(executable): \(error.localizedDescription)")
         }
-
         guard process.terminationStatus == 0 else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw CLIError("signing failed\(detail.map { ": \($0)" } ?? ""). Try building without --sign.")
+            let detail = String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CLIError(failure(detail.map { ": \($0)" } ?? ""))
         }
-
-        return try Data(contentsOf: signedURL)
     }
 
     private static func printHelp() {
@@ -331,6 +249,72 @@ struct LongwayCommand {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         exit(1)
     }
+}
+
+/// Every command takes the same shapes: valueless flags, options carrying a
+/// value (`--name value` or `--name=value`, repeatable), and one positional
+/// input path. A flag may also be given a value, which is how `--sign` and
+/// `--sign=anyone` are both accepted.
+private struct Options {
+    let input: String
+    private let flags: Set<String>
+    private let values: [String: [String]]
+
+    init(
+        _ arguments: [String],
+        command: String,
+        flags knownFlags: Set<String> = [],
+        valued: Set<String> = [],
+        usage: String
+    ) throws {
+        var flags: Set<String> = []
+        var values: [String: [String]] = [:]
+        var input: String?
+        var index = 0
+
+        while index < arguments.count {
+            let argument = arguments[index]
+            index += 1
+
+            guard argument.hasPrefix("-") else {
+                guard input == nil else { throw CLIError("\(command) accepts one input file") }
+                input = argument
+                continue
+            }
+
+            let name: String
+            let inlineValue: String?
+            if let separator = argument.firstIndex(of: "=") {
+                name = String(argument[argument.startIndex..<separator])
+                inlineValue = String(argument[argument.index(after: separator)...])
+            } else {
+                name = argument
+                inlineValue = nil
+            }
+
+            let key = name.drop(while: { $0 == "-" }) == "o" ? "output" : String(name.drop(while: { $0 == "-" }))
+            if let inlineValue, valued.contains(key) || knownFlags.contains(key) {
+                values[key, default: []].append(inlineValue)
+            } else if valued.contains(key) {
+                guard index < arguments.count else { throw CLIError("\(name) requires a value") }
+                values[key, default: []].append(arguments[index])
+                index += 1
+            } else if knownFlags.contains(key) {
+                flags.insert(key)
+            } else {
+                throw CLIError("unknown option '\(argument)'")
+            }
+        }
+
+        guard let input else { throw CLIError(usage) }
+        self.input = input
+        self.flags = flags
+        self.values = values
+    }
+
+    func has(_ name: String) -> Bool { flags.contains(name) }
+    func value(_ name: String) -> String? { values[name]?.last }
+    func all(_ name: String) -> [String] { values[name] ?? [] }
 }
 
 private struct CLIError: Error {

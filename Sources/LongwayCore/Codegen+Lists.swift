@@ -8,31 +8,7 @@ import Foundation
 /// 1, so this file adds the offset (statically for a literal index, with a
 /// Math action for a computed one).
 extension FunctionCompiler {
-    func compileListOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: CompileEnvironment
-    ) throws -> CompiledValue {
-        switch operation {
-        case "list":
-            return try compileListLiteral(operands, environment: environment)
-        case "length":
-            return try compileLength(operands, at: location, environment: environment)
-        case "empty?":
-            return try compileEmpty(operands, at: location, environment: environment)
-        case "first":
-            return try compileItem(operation, specifier: "First Item", operands: operands, at: location, environment: environment)
-        case "last":
-            return try compileItem(operation, specifier: "Last Item", operands: operands, at: location, environment: environment)
-        case "list-ref":
-            return try compileListRef(operands, at: location, environment: environment)
-        default:
-            preconditionFailure("unknown list operation")
-        }
-    }
-
-    private func compileListLiteral(
+    func compileListLiteral(
         _ operands: [Expression],
         environment: CompileEnvironment
     ) throws -> CompiledValue {
@@ -62,7 +38,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileLength(
+    func compileLength(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -87,7 +63,7 @@ extension FunctionCompiler {
 
     /// `(empty? xs)` is `(= (length xs) 0)`: Shortcuts has no emptiness test, and
     /// Count's output is a real number, so the existing equality lowering applies.
-    private func compileEmpty(
+    func compileEmpty(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -107,7 +83,7 @@ extension FunctionCompiler {
         return CompiledValue(actions: count.actions + comparison.actions, value: comparison.value)
     }
 
-    private func compileItem(
+    func compileItem(
         _ operation: String,
         specifier: String,
         operands: [Expression],
@@ -120,7 +96,7 @@ extension FunctionCompiler {
         return getItemFromList(list.reference, specifier: specifier, index: nil, into: &actions)
     }
 
-    private func compileListRef(
+    func compileListRef(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -194,7 +170,7 @@ extension FunctionCompiler {
 
     /// A list always comes from an action output - there is no literal list value -
     /// so a list operand that did not compile to one cannot be read from.
-    private func compileListOperand(
+    func compileListOperand(
         _ operation: String,
         _ expression: Expression,
         environment: CompileEnvironment

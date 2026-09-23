@@ -76,19 +76,18 @@ extension FunctionCompiler {
                     return actionUUID
                 }
                 let name = object["name"]!.stringValue!
-                let encoding = object["encoding"]!.stringValue!
                 let value = arguments[name]!
-                switch encoding {
-                case "text-token":
-                    return externalTextToken(value)
-                case "attachment":
+                switch ArgumentEncoding(rawValue: object["encoding"]!.stringValue!)! {
+                case .textToken:
+                    return tokenString(value)
+                case .attachment:
                     let output = materialize(value, into: &actions)
                     return ShortcutPlist.actionOutputAttachment(name: output.name, uuid: output.uuid)
-                case "literal":
+                case .literal:
                     return try externalLiteral(value, actionName: actionName, argumentName: name, at: location)
-                case "number":
+                case .number:
                     return numberParameter(value)
-                case "app-entity":
+                case .appEntity:
                     let identifier = try externalLiteral(
                         value,
                         actionName: actionName,
@@ -100,8 +99,6 @@ extension FunctionCompiler {
                         "subtitle": ["key": identifier],
                         "title": ["key": identifier]
                     ]
-                default:
-                    preconditionFailure("catalog validation rejected unknown encoding")
                 }
             }
             return try object.mapValues {
@@ -135,19 +132,6 @@ extension FunctionCompiler {
             return value
         case .null:
             preconditionFailure("catalog validation rejected null")
-        }
-    }
-
-    private func externalTextToken(_ value: CompiledValue.Value) -> [String: Any] {
-        switch value {
-        case let .literalString(text):
-            return ShortcutPlist.textTokenString(text)
-        case let .literalNumber(number):
-            return ShortcutPlist.textTokenString(ShortcutPlist.formatNumber(number))
-        case let .literalBoolean(boolean):
-            return ShortcutPlist.textTokenString(boolean ? "#t" : "#f")
-        case let .output(output):
-            return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
         }
     }
 

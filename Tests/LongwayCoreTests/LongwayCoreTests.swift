@@ -576,14 +576,14 @@ final class LongwayCoreTests: XCTestCase {
         (define (test)
           (show-result (or #t)))
         """)) { error in
-            XCTAssertEqual((error as? LongwayError)?.message, "or expects at least 2 operands, got 1")
+            XCTAssertEqual((error as? LongwayError)?.message, "or expects at least 2 arguments, got 1")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
         (define (test)
           (show-result (not #t #f)))
         """)) { error in
-            XCTAssertEqual((error as? LongwayError)?.message, "not expects 1 operand, got 2")
+            XCTAssertEqual((error as? LongwayError)?.message, "not expects 1 argument, got 2")
         }
     }
 
@@ -907,7 +907,7 @@ final class LongwayCoreTests: XCTestCase {
         (define (test)
           (show-result (< 1)))
         """)) { error in
-            XCTAssertEqual((error as? LongwayError)?.message, "< expects at least 2 operands, got 1")
+            XCTAssertEqual((error as? LongwayError)?.message, "< expects at least 2 arguments, got 1")
         }
 
         XCTAssertThrowsError(try LongwayCompiler().compile("""
@@ -1035,7 +1035,7 @@ final class LongwayCoreTests: XCTestCase {
         (define (test)
           (show-result (* 2)))
         """)) { error in
-            XCTAssertEqual((error as? LongwayError)?.message, "* expects at least 2 operands, got 1")
+            XCTAssertEqual((error as? LongwayError)?.message, "* expects at least 2 arguments, got 1")
         }
     }
 

@@ -5,47 +5,7 @@ import Foundation
 /// literal for now because those are the parameter shapes confirmed from
 /// Shortcuts-authored clipboard actions.
 extension FunctionCompiler {
-    func compileTextOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: CompileEnvironment
-    ) throws -> CompiledValue {
-        switch operation {
-        case "string-append":
-            return try compileStringAppend(operands, environment: environment)
-        case "number->text":
-            return try compileNumberToText(operands, at: location, environment: environment)
-        case "split-lines":
-            return try compileSplitText(operation, mode: nil, operands: operands, at: location, environment: environment)
-        case "split-whitespace":
-            return try compileSplitText(operation, mode: "Spaces", operands: operands, at: location, environment: environment)
-        case "split-text":
-            return try compileCustomSplit(operands, at: location, environment: environment)
-        default:
-            preconditionFailure("unknown text operation")
-        }
-    }
-
-    func compileInteractiveOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: CompileEnvironment
-    ) throws -> CompiledValue {
-        switch operation {
-        case "choose-from-list":
-            return try compileChooseFromList(operands, at: location, environment: environment)
-        case "ask-text", "ask-number":
-            return try compileAsk(operation, operands: operands, at: location)
-        case "format-current-date":
-            return try compileCurrentDate(operands, at: location)
-        default:
-            preconditionFailure("unknown interactive operation")
-        }
-    }
-
-    private func compileStringAppend(
+    func compileStringAppend(
         _ operands: [Expression],
         environment: CompileEnvironment
     ) throws -> CompiledValue {
@@ -83,7 +43,7 @@ extension FunctionCompiler {
         return CompiledValue(actions: actions, value: .output(output))
     }
 
-    private func compileNumberToText(
+    func compileNumberToText(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -111,7 +71,7 @@ extension FunctionCompiler {
         return CompiledValue(actions: actions, value: .output(text))
     }
 
-    private func compileSplitText(
+    func compileSplitText(
         _ operation: String,
         mode: String?,
         operands: [Expression],
@@ -130,7 +90,7 @@ extension FunctionCompiler {
         return splitTextResult(parameters: parameters, actions: input.actions)
     }
 
-    private func compileCustomSplit(
+    func compileCustomSplit(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -161,7 +121,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileChooseFromList(
+    func compileChooseFromList(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -194,7 +154,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileAsk(
+    func compileAsk(
         _ operation: String,
         operands: [Expression],
         at location: SourceLocation
@@ -220,7 +180,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileCurrentDate(
+    func compileCurrentDate(
         _ operands: [Expression],
         at location: SourceLocation
     ) throws -> CompiledValue {
@@ -242,7 +202,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileTextReference(
+    func compileTextReference(
         _ operation: String,
         _ expression: Expression,
         environment: CompileEnvironment

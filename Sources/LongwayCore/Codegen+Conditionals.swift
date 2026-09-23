@@ -4,6 +4,12 @@ import Foundation
 /// action. All of them ultimately funnel through `lowerShortcutConditionalActions`,
 /// which emits the three-part GroupingIdentifier-linked block Shortcuts expects.
 extension FunctionCompiler {
+    /// Longway carries Booleans as the text `#t`/`#f`, so every Boolean test
+    /// lowers to Shortcuts' `is` condition against that literal.
+    static var booleanCondition: [String: Any] {
+        ["WFCondition": equalityConditionCode, "WFConditionalActionString": "#t"]
+    }
+
     func compileIfForm(
         arguments: [Expression],
         at location: SourceLocation,
@@ -73,32 +79,9 @@ extension FunctionCompiler {
         trueBranch: CompiledValue,
         falseBranch: CompiledValue
     ) -> CompiledValue {
-        let condition: Int
-        switch operation {
-        case "<": condition = 0
-        case "<=": condition = 1
-        case ">": condition = 2
-        case ">=": condition = 3
-        case "=": condition = equalityConditionCode
-        default: preconditionFailure("unknown comparison operation")
-        }
-        return lowerNumericConditional(
-            condition: condition,
-            comparison: comparison,
-            trueBranch: trueBranch,
-            falseBranch: falseBranch
-        )
-    }
-
-    func lowerNumericConditional(
-        condition: Int,
-        comparison: NumericComparison,
-        trueBranch: CompiledValue,
-        falseBranch: CompiledValue
-    ) -> CompiledValue {
         var prefixActions: [[String: Any]] = []
         var input = comparison.left
-        var conditionParameters: [String: Any] = ["WFCondition": condition]
+        var conditionParameters: [String: Any] = ["WFCondition": comparisonConditionCodes[operation]!]
         switch comparison.right {
         case let .literalNumber(number):
             conditionParameters["WFNumberValue"] = number
@@ -150,10 +133,7 @@ extension FunctionCompiler {
         return lowerShortcutConditional(
             prefixActions: actions,
             input: conditionOutput,
-            conditionParameters: [
-                "WFCondition": 4,
-                "WFConditionalActionString": "#t"
-            ],
+            conditionParameters: Self.booleanCondition,
             trueBranch: trueBranch,
             falseBranch: falseBranch
         )
@@ -199,10 +179,7 @@ extension FunctionCompiler {
         return lowerShortcutConditionalActions(
             prefixActions: actions,
             input: conditionOutput,
-            conditionParameters: [
-                "WFCondition": 4,
-                "WFConditionalActionString": "#t"
-            ],
+            conditionParameters: Self.booleanCondition,
             trueActions: trueActions,
             falseActions: falseActions
         ).actions

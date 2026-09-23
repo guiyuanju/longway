@@ -7,43 +7,7 @@ import Foundation
 /// Shortcuts reads a `.` in a key as a key path into nested content, so a key
 /// containing one does not address a literal key of that name.
 extension FunctionCompiler {
-    func compileDictionaryOperation(
-        _ operation: String,
-        operands: [Expression],
-        at location: SourceLocation,
-        environment: CompileEnvironment
-    ) throws -> CompiledValue {
-        switch operation {
-        case "dict":
-            return try compileDictionaryLiteral(operands, at: location, environment: environment)
-        case "dict-ref":
-            return try compileDictionaryRef(operands, at: location, environment: environment)
-        case "dict-set":
-            return try compileDictionarySet(operands, at: location, environment: environment)
-        case "dict-keys":
-            return try compileDictionaryContents(
-                operation,
-                valueType: "All Keys",
-                name: "Dictionary Keys",
-                operands: operands,
-                at: location,
-                environment: environment
-            )
-        case "dict-values":
-            return try compileDictionaryContents(
-                operation,
-                valueType: "All Values",
-                name: "Dictionary Values",
-                operands: operands,
-                at: location,
-                environment: environment
-            )
-        default:
-            preconditionFailure("unknown dictionary operation")
-        }
-    }
-
-    private func compileDictionaryLiteral(
+    func compileDictionaryLiteral(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -69,7 +33,7 @@ extension FunctionCompiler {
             let value = try compileValue(operands[pair + 1], environment: environment)
             actions.append(contentsOf: value.actions)
             items.append(dictionaryItem(
-                keyToken: dictionaryKeyToken(key.value),
+                key: key.value,
                 value: value.value,
                 expectedType: value.value.type
             ))
@@ -86,7 +50,7 @@ extension FunctionCompiler {
         )
     }
 
-    private func compileDictionaryRef(
+    func compileDictionaryRef(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -121,7 +85,7 @@ extension FunctionCompiler {
 
     /// `dict-keys` and `dict-values` are the same action as `dict-ref` under a
     /// different `WFGetDictionaryValueType`, and both answer with a list.
-    private func compileDictionaryContents(
+    func compileDictionaryContents(
         _ operation: String,
         valueType: String,
         name: String,
@@ -156,7 +120,7 @@ extension FunctionCompiler {
     /// `(dict-set d k v)` answers a new dictionary rather than mutating `d`.
     /// The value rides in a text-shaped field, which would flatten a list or a
     /// nested dictionary, so those have to be built with `dict` instead.
-    private func compileDictionarySet(
+    func compileDictionarySet(
         _ operands: [Expression],
         at location: SourceLocation,
         environment: CompileEnvironment
@@ -182,7 +146,7 @@ extension FunctionCompiler {
                 uuid: dictionary.reference.uuid
             ),
             "WFDictionaryKey": dictionaryKeyParameter(key.value),
-            "WFDictionaryValue": dictionaryValue(value.value)
+            "WFDictionaryValue": tokenString(value.value)
         ], uuid: uuid))
         return CompiledValue(
             actions: actions,
@@ -198,7 +162,7 @@ extension FunctionCompiler {
     /// Like a list, a dictionary always comes from an action output - there is
     /// no literal dictionary value - so an operand that did not compile to one
     /// cannot be read from.
-    private func compileDictionaryOperand(
+    func compileDictionaryOperand(
         _ operation: String,
         _ expression: Expression,
         environment: CompileEnvironment
@@ -212,7 +176,7 @@ extension FunctionCompiler {
         return (compiled.actions, output)
     }
 
-    private func compileDictionaryKey(
+    func compileDictionaryKey(
         _ operation: String,
         _ expression: Expression,
         environment: CompileEnvironment
@@ -231,17 +195,6 @@ extension FunctionCompiler {
         switch value {
         case let .literalString(string):
             return string
-        case let .output(output):
-            return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
-        case .literalNumber, .literalBoolean:
-            preconditionFailure("a dictionary key is always text")
-        }
-    }
-
-    private func dictionaryKeyToken(_ value: CompiledValue.Value) -> [String: Any] {
-        switch value {
-        case let .literalString(string):
-            return ShortcutPlist.textTokenString(string)
         case let .output(output):
             return ShortcutPlist.actionOutputTokenString(name: output.name, uuid: output.uuid)
         case .literalNumber, .literalBoolean:
