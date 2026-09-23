@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "name": "working-copy-append-file",
+      "arguments": [
+        { "name": "repository", "type": "text" },
+        { "name": "path", "type": "text" },
+        { "name": "content", "type": "text" }
+      ],
+      "result": {
+        "type": "any",
+        "outputName": "Write Repository File",
+        "runtimeTyped": false
+      },
+      "sideEffect": true,
+      "template": {
+        "WFWorkflowActionIdentifier": "com.appliedphasor.working-copy.WriteFileEntityAppIntent",
+        "WFWorkflowActionParameters": {
+          "AppIntentDescriptor": {
+            "AppIntentIdentifier": "WriteFileEntityAppIntent",
+            "BundleIdentifier": "com.appliedphasor.working-copy",
+            "Name": "Working Copy",
+            "TeamIdentifier": "4U9NSKBV63"
+          },
+          "UUID": { "$longway": "uuid" },
+          "content": {
+            "$longway": "argument",
+            "name": "content",
+            "encoding": "attachment"
+          },
+          "createMissing": true,
+          "mode": "append",
+          "path": {
+            "$longway": "argument",
+            "name": "path",
+            "encoding": "text-token"
+          },
+          "repo": {
+            "$longway": "argument",
+            "name": "repository",
+            "encoding": "app-entity"
+          }
+        }
+      }
+    },
+    {
+      "name": "working-copy-commit",
+      "arguments": [
+        { "name": "repository", "type": "any" },
+        { "name": "message", "type": "text" }
+      ],
+      "sideEffect": true,
+      "template": {
+        "WFWorkflowActionIdentifier": "com.appliedphasor.working-copy.CommitRepositoryEntityAppIntent",
+        "WFWorkflowActionParameters": {
+          "AppIntentDescriptor": {
+            "AppIntentIdentifier": "CommitRepositoryEntityAppIntent",
+            "BundleIdentifier": "com.appliedphasor.working-copy",
+            "Name": "Working Copy",
+            "TeamIdentifier": "4U9NSKBV63"
+          },
+          "UUID": { "$longway": "uuid" },
+          "message": {
+            "$longway": "argument",
+            "name": "message",
+            "encoding": "text-token"
+          },
+          "repo": {
+            "$longway": "argument",
+            "name": "repository",
+            "encoding": "attachment"
+          }
+        }
+      }
+    },
+    {
+      "name": "working-copy-pull",
+      "arguments": [
+        { "name": "repository", "type": "any" }
+      ],
+      "sideEffect": true,
+      "template": {
+        "WFWorkflowActionIdentifier": "com.appliedphasor.working-copy.PullRepositoryEntityAppIntent",
+        "WFWorkflowActionParameters": {
+          "AppIntentDescriptor": {
+            "AppIntentIdentifier": "PullRepositoryEntityAppIntent",
+            "BundleIdentifier": "com.appliedphasor.working-copy",
+            "Name": "Working Copy",
+            "TeamIdentifier": "4U9NSKBV63"
+          },
+          "UUID": { "$longway": "uuid" },
+          "repo": {
+            "$longway": "argument",
+            "name": "repository",
+            "encoding": "attachment"
+          }
+        }
+      }
+    },
+    {
+      "name": "working-copy-push",
+      "arguments": [
+        { "name": "repository", "type": "any" }
+      ],
+      "sideEffect": true,
+      "template": {
+        "WFWorkflowActionIdentifier": "com.appliedphasor.working-copy.PushRepositoryEntityAppIntent",
+        "WFWorkflowActionParameters": {
+          "AppIntentDescriptor": {
+            "AppIntentIdentifier": "PushRepositoryEntityAppIntent",
+            "BundleIdentifier": "com.appliedphasor.working-copy",
+            "Name": "Working Copy",
+            "TeamIdentifier": "4U9NSKBV63"
+          },
+          "UUID": { "$longway": "uuid" },
+          "remote": {
+            "subtitle": { "key": "Default" },
+            "title": { "key": "Default" },
+            "value": "Default"
+          },
+          "repo": {
+            "$longway": "argument",
+            "name": "repository",
+            "encoding": "attachment"
+          }
+        }
+      }
+    }
+  ]
+}

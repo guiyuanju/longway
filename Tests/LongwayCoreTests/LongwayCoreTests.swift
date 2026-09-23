@@ -1928,6 +1928,257 @@ final class LongwayCoreTests: XCTestCase {
         }
     }
 
+    func testDeclarativeActionCatalogRendersTypedArgumentsAndResults() throws {
+        let catalog = try ActionCatalog(data: Data("""
+        {
+          "version": 1,
+          "actions": [{
+            "name": "sample-echo",
+            "arguments": [{"name": "text", "type": "text"}],
+            "result": {"type": "text", "outputName": "Echo", "runtimeTyped": true},
+            "sideEffect": false,
+            "template": {
+              "WFWorkflowActionIdentifier": "com.example.EchoIntent",
+              "WFWorkflowActionParameters": {
+                "UUID": {"$longway": "uuid"},
+                "text": {"$longway": "argument", "name": "text", "encoding": "text-token"},
+                "mode": "exact",
+                "limit": 3
+              }
+            }
+          }]
+        }
+        """.utf8))
+        let result = try LongwayCompiler().compile("""
+        (define (test)
+          (let ((message "hello"))
+            (sample-echo message)))
+        """, catalog: catalog)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertEqual(actions.map { $0["WFWorkflowActionIdentifier"] as? String }, [
+            "is.workflow.actions.gettext",
+            "com.example.EchoIntent",
+            "is.workflow.actions.output"
+        ])
+
+        let textUUID = try XCTUnwrap(
+            (actions[0]["WFWorkflowActionParameters"] as? [String: Any])?["UUID"] as? String
+        )
+        let external = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(external["mode"] as? String, "exact")
+        XCTAssertEqual(external["limit"] as? Int, 3)
+        let externalUUID = try XCTUnwrap(external["UUID"] as? String)
+        let token = try XCTUnwrap(external["text"] as? [String: Any])
+        let tokenValue = try XCTUnwrap(token["Value"] as? [String: Any])
+        let tokenAttachments = try XCTUnwrap(tokenValue["attachmentsByRange"] as? [String: Any])
+        let tokenAttachment = try XCTUnwrap(tokenAttachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(tokenAttachment["OutputUUID"] as? String, textUUID)
+
+        let outputParameters = try XCTUnwrap(actions[2]["WFWorkflowActionParameters"] as? [String: Any])
+        let output = try XCTUnwrap(outputParameters["WFOutput"] as? [String: Any])
+        let outputValue = try XCTUnwrap(output["Value"] as? [String: Any])
+        let outputAttachments = try XCTUnwrap(outputValue["attachmentsByRange"] as? [String: Any])
+        let outputAttachment = try XCTUnwrap(outputAttachments["{0, 1}"] as? [String: Any])
+        XCTAssertEqual(outputAttachment["OutputName"] as? String, "Echo")
+        XCTAssertEqual(outputAttachment["OutputUUID"] as? String, externalUUID)
+    }
+
+    func testWorkingCopyCatalogWiresRepositoryInputsExplicitly() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let catalog = try ActionCatalog(contentsOf: [
+            projectRoot.appendingPathComponent("Actions/WorkingCopy.longway-actions.json")
+        ])
+        let result = try LongwayCompiler().compile("""
+        (define (save)
+          (let ((repository (working-copy-append-file "beancount-ledger" "ledger/entry.txt" "entry")))
+            (working-copy-commit repository "record entry")
+            (working-copy-pull repository)
+            (working-copy-push repository)
+            "done"))
+        """, catalog: catalog)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let write = try XCTUnwrap(actions.first {
+            ($0["WFWorkflowActionIdentifier"] as? String)?.hasSuffix("WriteFileEntityAppIntent") == true
+        })
+        let writeParameters = try XCTUnwrap(write["WFWorkflowActionParameters"] as? [String: Any])
+        let writeUUID = try XCTUnwrap(writeParameters["UUID"] as? String)
+        let selectedRepository = try XCTUnwrap(writeParameters["repo"] as? [String: Any])
+        XCTAssertEqual(selectedRepository["identifier"] as? String, "beancount-ledger")
+        XCTAssertEqual((selectedRepository["title"] as? [String: Any])?["key"] as? String, "beancount-ledger")
+
+        let repositoryConsumers = actions.filter {
+            guard let identifier = $0["WFWorkflowActionIdentifier"] as? String else { return false }
+            return identifier.hasSuffix("CommitRepositoryEntityAppIntent")
+                || identifier.hasSuffix("PullRepositoryEntityAppIntent")
+                || identifier.hasSuffix("PushRepositoryEntityAppIntent")
+        }
+        XCTAssertEqual(repositoryConsumers.count, 3)
+        for action in repositoryConsumers {
+            let parameters = try XCTUnwrap(action["WFWorkflowActionParameters"] as? [String: Any])
+            let repository = try XCTUnwrap(parameters["repo"] as? [String: Any])
+            let value = try XCTUnwrap(repository["Value"] as? [String: Any])
+            XCTAssertEqual(value["OutputUUID"] as? String, writeUUID)
+        }
+    }
+
+    func testDeclarativeActionCatalogValidatesTypesAndValueUsage() throws {
+        let catalog = try ActionCatalog(data: Data("""
+        {
+          "version": 1,
+          "actions": [{
+            "name": "sample-notify",
+            "arguments": [{"name": "message", "type": "text"}],
+            "sideEffect": true,
+            "template": {
+              "WFWorkflowActionIdentifier": "com.example.NotifyIntent",
+              "WFWorkflowActionParameters": {
+                "UUID": {"$longway": "uuid"},
+                "message": {"$longway": "argument", "name": "message", "encoding": "literal"}
+              }
+            }
+          }]
+        }
+        """.utf8))
+
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad) (sample-notify 1) "done")
+        """, catalog: catalog)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "sample-notify argument 1 expects text")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (bad) (sample-notify "hello"))
+        """, catalog: catalog)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "external action 'sample-notify' does not produce a value")
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (sample-notify) "conflict")
+        """, catalog: catalog)) { error in
+            XCTAssertEqual((error as? LongwayError)?.message, "function name 'sample-notify' is reserved")
+        }
+    }
+
+    func testCatalogSideEffectsDisableTailCallOptimization() throws {
+        let catalog = try ActionCatalog(data: Data("""
+        {
+          "version": 1,
+          "actions": [{
+            "name": "sample-prompt",
+            "arguments": [{"name": "prompt", "type": "text"}],
+            "result": {"type": "text", "outputName": "Answer"},
+            "sideEffect": true,
+            "template": {
+              "WFWorkflowActionIdentifier": "com.example.PromptIntent",
+              "WFWorkflowActionParameters": {
+                "UUID": {"$longway": "uuid"},
+                "prompt": {"$longway": "argument", "name": "prompt", "encoding": "text-token"}
+              }
+            }
+          }]
+        }
+        """.utf8))
+        let result = try LongwayCompiler().compile("""
+        (define (retry n)
+          (if (= n 0)
+              "done"
+              (let ((answer (sample-prompt "Continue?")))
+                (retry (- n 1)))))
+        """, catalog: catalog)
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any]
+        )
+        let actions = try XCTUnwrap(propertyList["WFWorkflowActions"] as? [[String: Any]])
+        let identifiers = actions.compactMap { $0["WFWorkflowActionIdentifier"] as? String }
+        XCTAssertTrue(identifiers.contains("com.example.PromptIntent"))
+        XCTAssertTrue(identifiers.contains("is.workflow.actions.runworkflow"))
+        XCTAssertFalse(identifiers.contains("is.workflow.actions.repeat.count"))
+    }
+
+    func testActionCatalogRejectsInvalidTemplates() throws {
+        XCTAssertThrowsError(try ActionCatalog(data: Data("""
+        {
+          "version": 1,
+          "actions": [{
+            "name": "if",
+            "arguments": [],
+            "template": {
+              "WFWorkflowActionIdentifier": "com.example.BadIntent",
+              "WFWorkflowActionParameters": {"UUID": {"$longway": "uuid"}}
+            }
+          }]
+        }
+        """.utf8))) { error in
+            XCTAssertEqual(
+                (error as? ActionCatalogError)?.message,
+                "external action 'if' conflicts with a built-in form"
+            )
+        }
+        XCTAssertThrowsError(try ActionCatalog(data: Data("""
+        {
+          "version": 1,
+          "actions": [{
+            "name": "broken",
+            "arguments": [{"name": "value", "type": "text"}],
+            "template": {
+              "WFWorkflowActionIdentifier": "com.example.BadIntent",
+              "WFWorkflowActionParameters": {"UUID": {"$longway": "uuid"}}
+            }
+          }]
+        }
+        """.utf8))) { error in
+            XCTAssertEqual(
+                (error as? ActionCatalogError)?.message,
+                "external action 'broken' has unused arguments: value"
+            )
+        }
+    }
+
+    func testShortcutActionExtractorReadsUnsignedWorkflowPlists() throws {
+        let workflow: [String: Any] = [
+            "WFWorkflowActions": [
+                [
+                    "WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
+                    "WFWorkflowActionParameters": ["WFTextActionText": "hello"]
+                ],
+                [
+                    "WFWorkflowActionIdentifier": "com.example.SampleIntent",
+                    "WFWorkflowActionParameters": ["enabled": true]
+                ]
+            ]
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: workflow,
+            format: .binary,
+            options: 0
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("longway-extractor-\(UUID().uuidString).shortcut")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let actions = try ShortcutActionExtractor().extract(from: url)
+        XCTAssertEqual(actions.map(\.index), [0, 1])
+        XCTAssertEqual(actions.map(\.identifier), [
+            "is.workflow.actions.gettext",
+            "com.example.SampleIntent"
+        ])
+        let extracted = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: actions[1].propertyListData,
+                format: nil
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(extracted["WFWorkflowActionIdentifier"] as? String, "com.example.SampleIntent")
+    }
+
     private func dictionaryFieldItems(in action: [String: Any]) -> [[String: Any]]? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
         let items = parameters?["WFItems"] as? [String: Any]

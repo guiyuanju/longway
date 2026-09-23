@@ -1,0 +1,81 @@
+; Build and save a Beancount transaction through Working Copy.
+; Compile with: --actions Actions/WorkingCopy.longway-actions.json
+(define (working-copy-transaction)
+  (let* ((menu
+         (split-lines
+          "Suica | Assets:JP:IC:Suica JPY
+交通 | Expenses:Transport JPY
+招行VISA | Liabilities:CN:CMB:Visa JPY
+乐天卡 | Liabilities:JP:Rakuten:Mastercard JPY
+外食 | Expenses:Living:Dining JPY
+现金 | Assets:JP:Cash JPY
+家具 | Expenses:Home:Furniture JPY
+招行JCB | Liabilities:CN:CMB:JCB JPY
+订阅 | Expenses:Leisure:Subscription JPY
+三菱 | Assets:JP:MUFG:Checking JPY
+打扮 | Expenses:SelfCare:Appearance JPY
+医疗 | Expenses:Health JPY
+水电气 | Expenses:Home:Bills:Utility JPY
+娱乐约会 | Expenses:Leisure:Outing JPY
+日用 | Expenses:Living:Supplies JPY
+招行储蓄 | Assets:CN:CMB:Savings CNY
+未分类 | Expenses:Misc JPY
+旅行 | Expenses:Travel JPY
+食材 | Expenses:Living:Groceries JPY
+工资 | Income:JP:Salary JPY
+报销收入 | Income:Reimbursement JPY
+招行银联 | Liabilities:CN:CMB:UnionPay CNY
+支付宝 | Assets:CN:Alipay CNY
+人民币现金 | Assets:CN:Cash CNY
+微信 | Assets:CN:WeChatPay CNY
+虚拟货币 | Assets:Investments:Crypto JPY
+iDeCo | Assets:Investments:IDeCo JPY
+NISA | Assets:Investments:NISA JPY
+个股 | Assets:Investments:Stock JPY
+应急金 | Assets:JP:MUFG:Emergency JPY
+买房资金 | Assets:JP:MUFG:House JPY
+PayPay | Assets:JP:PayPay JPY
+待报销 | Assets:Receivable:Reimbursement JPY
+汇款在途 | Assets:Transit:Remittance JPY
+数码 | Expenses:Digital JPY
+教育 | Expenses:Education JPY
+手续费 | Expenses:Fees JPY
+手机 | Expenses:Home:Bills:Mobile JPY
+房租 | Expenses:Home:Rent JPY
+保险 | Expenses:Insurance JPY
+健身 | Expenses:SelfCare:Fitness JPY
+返现 | Income:Cashback JPY
+利息 | Income:Interest JPY
+投资收益 | Income:Investment JPY
+奖金 | Income:JP:Bonus JPY
+其他收入 | Income:Other JPY
+应付款 | Liabilities:Payable JPY"))
+         (incoming-choice (choose-from-list menu "入账账户"))
+         (incoming-parts (split-text incoming-choice " | "))
+         (incoming-tail (split-whitespace (last incoming-parts)))
+         (incoming-account (first incoming-tail))
+         (outgoing-choice (choose-from-list menu "出账账户"))
+         (outgoing-parts (split-text outgoing-choice " | "))
+         (outgoing-tail (split-whitespace (last outgoing-parts)))
+         (outgoing-account (first outgoing-tail))
+         (currency (last outgoing-tail))
+         (amount (ask-number "金额"))
+         (counterparty (ask-text "交易对象"))
+         (description (ask-text "交易说明"))
+         (date (format-current-date "yyyy-MM-dd"))
+         (file-path
+          (format-current-date "'ledger/'yyyy'/'yyyy-MM'.beancount'"))
+         (commit-message
+          (string-append "记账 " counterparty " " (number->text amount) currency))
+         (transaction-text
+          (string-append
+           "\n\n" date " * \"" counterparty "\" \"" description "\"\n"
+           "  " incoming-account "  " (number->text amount) " " currency "\n"
+           "  " outgoing-account))
+         (repository "beancount-ledger")
+         (repository-file
+          (working-copy-append-file "beancount-ledger" file-path transaction-text)))
+    (working-copy-commit repository-file commit-message)
+    (working-copy-pull repository)
+    (working-copy-push repository)
+    transaction-text))

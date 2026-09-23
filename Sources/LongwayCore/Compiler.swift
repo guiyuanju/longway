@@ -29,15 +29,18 @@ public struct LongwayCompiler {
 
     public func compileProgram(
         _ source: String,
-        format: PropertyListSerialization.PropertyListFormat = .binary
+        format: PropertyListSerialization.PropertyListFormat = .binary,
+        catalog: ActionCatalog = .empty
     ) throws -> CompiledProgram {
         var lexer = Lexer(source: source)
         let tokens = try lexer.tokenize()
         var parser = Parser(tokens: tokens)
         let expressions = try parser.parseProgram()
-        let definitions = try DefinitionParser().parse(expressions)
-        let signatures = try SignatureInferrer().infer(definitions)
-        let compiler = FunctionCompiler(signatures: signatures)
+        let definitions = try DefinitionParser(
+            additionalReservedNames: catalog.actionNames
+        ).parse(expressions)
+        let signatures = try SignatureInferrer(catalog: catalog).infer(definitions)
+        let compiler = FunctionCompiler(signatures: signatures, catalog: catalog)
 
         let shortcuts = try definitions.map { definition in
             let workflow = try compiler.compile(definition)
@@ -57,9 +60,10 @@ public struct LongwayCompiler {
 
     public func compile(
         _ source: String,
-        format: PropertyListSerialization.PropertyListFormat = .binary
+        format: PropertyListSerialization.PropertyListFormat = .binary,
+        catalog: ActionCatalog = .empty
     ) throws -> CompiledShortcut {
-        let program = try compileProgram(source, format: format)
+        let program = try compileProgram(source, format: format, catalog: catalog)
         guard program.shortcuts.count == 1, let shortcut = program.shortcuts.first else {
             throw LongwayError(
                 "source defines \(program.shortcuts.count) functions; use compileProgram to compile all functions",

@@ -91,6 +91,7 @@ struct Workflow {
 /// the action catalog, value expressions, conditionals, and value materialization.
 struct FunctionCompiler {
     let signatures: [String: FunctionSignature]
+    let catalog: ActionCatalog
 
     func compile(_ definition: FunctionDefinition) throws -> Workflow {
         let signature = signatures[definition.name]!
@@ -114,7 +115,7 @@ struct FunctionCompiler {
         }
 
         let result: CompiledValue
-        if isTailRecursive(definition) {
+        if isTailRecursive(definition, additionalSideEffectingForms: catalog.sideEffectingNames) {
             result = try compileTailRecursiveLoop(definition, signature: signature, parameterOutputs: variables)
         } else {
             let environment = CompileEnvironment(variables: variables)
@@ -157,6 +158,14 @@ struct FunctionCompiler {
                 at: expression.location,
                 environment: environment
             )
+        }
+        if let externalAction = catalog.actions[formName] {
+            return try compileExternalAction(
+                externalAction,
+                operands: Array(parts.dropFirst()),
+                at: expression.location,
+                environment: environment
+            ).actions
         }
         if signatures[formName] != nil {
             return try compileValue(expression, environment: environment).actions

@@ -26,6 +26,8 @@ struct LongwayCommand {
             try build(Array(arguments.dropFirst()))
         case "check":
             try check(Array(arguments.dropFirst()))
+        case "inspect-actions":
+            try inspectActions(Array(arguments.dropFirst()))
         case "help", "--help", "-h":
             printHelp()
         case "version", "--version":
@@ -40,6 +42,7 @@ struct LongwayCommand {
         var outputPath: String?
         var format: PropertyListSerialization.PropertyListFormat = .binary
         var signingMode: String?
+        var actionCatalogPaths: [String] = []
         var index = 0
 
         while index < arguments.count {
@@ -53,6 +56,12 @@ struct LongwayCommand {
                 outputPath = arguments[index]
             case "--xml":
                 format = .xml
+            case "--actions":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError("--actions requires a JSON catalog path")
+                }
+                actionCatalogPaths.append(arguments[index])
             case "--sign":
                 signingMode = "people-who-know-me"
                 if index + 1 < arguments.count, ["anyone", "people-who-know-me"].contains(arguments[index + 1]) {
@@ -62,6 +71,8 @@ struct LongwayCommand {
             default:
                 if argument.hasPrefix("--sign=") {
                     signingMode = String(argument.dropFirst("--sign=".count))
+                } else if argument.hasPrefix("--actions=") {
+                    actionCatalogPaths.append(String(argument.dropFirst("--actions=".count)))
                 } else if argument.hasPrefix("-") {
                     throw CLIError("unknown option '\(argument)'")
                 } else if inputPath == nil {
@@ -83,7 +94,11 @@ struct LongwayCommand {
         let inputURL = URL(fileURLWithPath: inputPath)
         let destination = outputPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? inputURL.deletingPathExtension().appendingPathExtension("shortcuts")
-        let compiled = try compileFile(inputURL, format: format)
+        let compiled = try compileFile(
+            inputURL,
+            format: format,
+            actionCatalogPaths: actionCatalogPaths
+        )
         let artifacts = try compiled.shortcuts.map { shortcut in
             let data = try signingMode.map { try sign(shortcut.data, mode: $0) } ?? shortcut.data
             return (shortcut, data)
@@ -115,19 +130,122 @@ struct LongwayCommand {
     }
 
     private static func check(_ arguments: [String]) throws {
-        guard arguments.count == 1 else {
-            throw CLIError("usage: longway check <file.longway>")
+        var inputPath: String?
+        var actionCatalogPaths: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--actions" {
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError("--actions requires a JSON catalog path")
+                }
+                actionCatalogPaths.append(arguments[index])
+            } else if argument.hasPrefix("--actions=") {
+                actionCatalogPaths.append(String(argument.dropFirst("--actions=".count)))
+            } else if argument.hasPrefix("-") {
+                throw CLIError("unknown option '\(argument)'")
+            } else if inputPath == nil {
+                inputPath = argument
+            } else {
+                throw CLIError("check accepts one input file")
+            }
+            index += 1
         }
-        let compiled = try compileFile(URL(fileURLWithPath: arguments[0]), format: .binary)
+        guard let inputPath else {
+            throw CLIError("usage: longway check <file.longway> [--actions catalog.json]")
+        }
+        let compiled = try compileFile(
+            URL(fileURLWithPath: inputPath),
+            format: .binary,
+            actionCatalogPaths: actionCatalogPaths
+        )
         let actionCount = compiled.shortcuts.reduce(0) { $0 + $1.actionCount }
         let names = compiled.shortcuts.map(\.name).joined(separator: ", ")
         let noun = compiled.shortcuts.count == 1 ? "function" : "functions"
         print("OK: \(compiled.shortcuts.count) \(noun) [\(names)] (\(actionCount) Shortcut actions)")
     }
 
+    private static func inspectActions(_ arguments: [String]) throws {
+        var inputPath: String?
+        var outputPath: String?
+        var thirdPartyOnly = false
+        var index = 0
+
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "-o", "--output":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError("\(argument) requires a directory")
+                }
+                outputPath = arguments[index]
+            case "--third-party-only":
+                thirdPartyOnly = true
+            default:
+                if argument.hasPrefix("-") {
+                    throw CLIError("unknown option '\(argument)'")
+                } else if inputPath == nil {
+                    inputPath = argument
+                } else {
+                    throw CLIError("inspect-actions accepts one input file")
+                }
+            }
+            index += 1
+        }
+
+        guard let inputPath else {
+            throw CLIError("usage: longway inspect-actions <file.shortcut> [-o directory] [--third-party-only]")
+        }
+        let actions = try ShortcutActionExtractor().extract(from: URL(fileURLWithPath: inputPath))
+        let selected = thirdPartyOnly
+            ? actions.filter { !$0.identifier.hasPrefix("is.workflow.actions.") }
+            : actions
+
+        for action in selected {
+            print(String(format: "%02d  %@", action.index, action.identifier))
+        }
+
+        guard let outputPath else {
+            let qualifier = thirdPartyOnly ? " third-party" : ""
+            print("Found \(selected.count)\(qualifier) actions")
+            return
+        }
+
+        let outputURL = URL(fileURLWithPath: outputPath, isDirectory: true)
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: outputURL.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw CLIError("output path must be a directory")
+            }
+            guard try fileManager.contentsOfDirectory(atPath: outputURL.path).isEmpty else {
+                throw CLIError("output directory must be empty")
+            }
+        } else {
+            try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
+        }
+
+        for action in selected {
+            let safeIdentifier = action.identifier.replacingOccurrences(
+                of: "[^A-Za-z0-9._-]",
+                with: "-",
+                options: .regularExpression
+            )
+            let filename = String(format: "%02d-%@.plist", action.index, safeIdentifier)
+            try action.propertyListData.write(
+                to: outputURL.appendingPathComponent(filename),
+                options: .atomic
+            )
+        }
+        print("Wrote \(selected.count) action plists to \(outputURL.path)")
+    }
+
     private static func compileFile(
         _ inputURL: URL,
-        format: PropertyListSerialization.PropertyListFormat
+        format: PropertyListSerialization.PropertyListFormat,
+        actionCatalogPaths: [String] = []
     ) throws -> CompiledProgram {
         let source: String
         do {
@@ -137,7 +255,14 @@ struct LongwayCommand {
         }
 
         do {
-            return try LongwayCompiler().compileProgram(source, format: format)
+            let catalog = try ActionCatalog(
+                contentsOf: actionCatalogPaths.map { URL(fileURLWithPath: $0) }
+            )
+            return try LongwayCompiler().compileProgram(
+                source,
+                format: format,
+                catalog: catalog
+            )
         } catch let error as LongwayError {
             throw CLIError("\(inputURL.path):\(error.description)")
         }
@@ -188,12 +313,17 @@ struct LongwayCommand {
 
         Usage:
           longway build <file.longway> [-o output-directory] [--xml]
+                        [--actions catalog.json]…
                         [--sign[=anyone|people-who-know-me]]
-          longway check <file.longway>
+          longway check <file.longway> [--actions catalog.json]…
+          longway inspect-actions <file.shortcut> [-o directory] [--third-party-only]
           longway version
 
         Build creates one unsigned .shortcut per function in a .shortcuts directory.
+        Use repeated --actions options to load declarative third-party action catalogs.
         Use --sign to call Apple's `shortcuts sign` command for every artifact.
+        Inspect-actions reads unsigned or Apple-signed Shortcuts, lists their actions,
+        and optionally writes each action as an XML property list.
         """)
     }
 

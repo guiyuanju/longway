@@ -1,5 +1,14 @@
 let comparisonOperators: Set<String> = ["=", "<", "<=", ">", ">="]
 
+let builtinFormNames: Set<String> = [
+    "define", "let", "let*", "if", "+", "-", "*", "/", "=", "<", "<=", ">", ">=",
+    "and", "or", "not", "show-result", "notification", "open-url", "wait",
+    "list", "length", "list-ref", "first", "last", "empty?",
+    "dict", "dict-ref", "dict-set", "dict-keys", "dict-values",
+    "string-append", "number->text", "split-lines", "split-whitespace", "split-text",
+    "choose-from-list", "ask-text", "ask-number", "format-current-date"
+]
+
 /// Shortcut condition code for `is`, the equality comparison.
 let equalityConditionCode = 4
 

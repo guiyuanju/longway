@@ -29,24 +29,33 @@ private let tailCallSideEffectingForms: Set<String> = [
 /// side effects and reach a direct self-call with matching arity. Anything
 /// else (mutual recursion, non-tail recursion, side effects) falls back to
 /// the existing Run-Shortcut-per-call recursion, unchanged.
-func isTailRecursive(_ definition: FunctionDefinition) -> Bool {
+func isTailRecursive(
+    _ definition: FunctionDefinition,
+    additionalSideEffectingForms: Set<String> = []
+) -> Bool {
     guard definition.body.count == 1, let body = definition.body.first else { return false }
-    guard !containsDisqualifyingAction(body) else { return false }
+    guard !containsDisqualifyingAction(
+        body,
+        sideEffectingForms: tailCallSideEffectingForms.union(additionalSideEffectingForms)
+    ) else { return false }
     return tailSelfCall(body, functionName: definition.name, arity: definition.parameters.count)
 }
 
-private func containsDisqualifyingAction(_ expression: Expression) -> Bool {
+private func containsDisqualifyingAction(
+    _ expression: Expression,
+    sideEffectingForms: Set<String>
+) -> Bool {
     guard case let .list(parts) = expression.value else {
         return false
     }
     if let head = parts.first, case let .symbol(formName) = head.value,
-       tailCallSideEffectingForms.contains(formName) {
+       sideEffectingForms.contains(formName) {
         return true
     }
     // Interactive forms can appear inside value expressions and `let`
     // initializer binding lists, whose first item is itself a list rather than
     // a form name. Traverse every child instead of assuming a symbolic head.
-    return parts.contains { containsDisqualifyingAction($0) }
+    return parts.contains { containsDisqualifyingAction($0, sideEffectingForms: sideEffectingForms) }
 }
 
 private func tailSelfCall(

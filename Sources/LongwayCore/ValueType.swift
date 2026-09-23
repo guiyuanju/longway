@@ -1,4 +1,4 @@
-enum ValueType: Equatable {
+enum ValueType: Equatable, Sendable {
     case text
     case number
     case boolean

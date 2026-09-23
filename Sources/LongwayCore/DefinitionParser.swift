@@ -14,6 +14,12 @@ struct FunctionDefinition {
 /// Turns top-level `define` forms into `FunctionDefinition`s, rejecting anything
 /// that cannot possibly become a standalone Shortcut before inference or codegen runs.
 struct DefinitionParser {
+    let additionalReservedNames: Set<String>
+
+    init(additionalReservedNames: Set<String> = []) {
+        self.additionalReservedNames = additionalReservedNames
+    }
+
     func parse(_ expressions: [Expression]) throws -> [FunctionDefinition] {
         guard !expressions.isEmpty else {
             throw LongwayError(
@@ -40,7 +46,7 @@ struct DefinitionParser {
             else {
                 throw LongwayError("define signature must be a list beginning with a function name", at: forms[1].location)
             }
-            guard !reservedFunctionNames.contains(name) else {
+            guard !builtinFormNames.contains(name), !additionalReservedNames.contains(name) else {
                 throw LongwayError("function name '\(name)' is reserved", at: nameExpression.location)
             }
             try validateIdentifier(name, role: "function", at: nameExpression.location)
@@ -90,14 +96,4 @@ struct DefinitionParser {
         }
     }
 
-    private var reservedFunctionNames: Set<String> {
-        [
-            "define", "let", "let*", "if", "+", "-", "*", "/", "=", "<", "<=", ">", ">=",
-            "and", "or", "not", "show-result", "notification", "open-url", "wait",
-            "list", "length", "list-ref", "first", "last", "empty?",
-            "dict", "dict-ref", "dict-set", "dict-keys", "dict-values",
-            "string-append", "number->text", "split-lines", "split-whitespace", "split-text",
-            "choose-from-list", "ask-text", "ask-number", "format-current-date"
-        ]
-    }
 }

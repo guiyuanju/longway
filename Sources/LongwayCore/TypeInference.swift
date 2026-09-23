@@ -30,6 +30,12 @@ private struct InferenceEnvironment {
 /// This lets mutually recursive functions constrain each other's types regardless
 /// of definition order.
 struct SignatureInferrer {
+    let catalog: ActionCatalog
+
+    init(catalog: ActionCatalog = .empty) {
+        self.catalog = catalog
+    }
+
     func infer(
         _ definitions: [FunctionDefinition]
     ) throws -> [String: FunctionSignature] {
@@ -148,6 +154,17 @@ struct SignatureInferrer {
             )
             try inferForm(arguments[1], environment: environment, inference: inference)
             try inferForm(arguments[2], environment: environment, inference: inference)
+            return
+        }
+        if let externalAction = catalog.actions[formName] {
+            _ = try inferExternalAction(
+                externalAction,
+                operands: Array(parts.dropFirst()),
+                at: expression.location,
+                environment: environment,
+                inference: inference,
+                requireResult: false
+            )
             return
         }
         if environment.functions[formName] != nil {
@@ -451,6 +468,42 @@ struct SignatureInferrer {
         }
     }
 
+    private func inferExternalAction(
+        _ action: ExternalActionDefinition,
+        operands: [Expression],
+        at location: SourceLocation,
+        environment: InferenceEnvironment,
+        inference: TypeInference,
+        requireResult: Bool
+    ) throws -> Int? {
+        try requireArgumentCount(
+            action.arguments.count,
+            action: action.name,
+            arguments: operands,
+            at: location
+        )
+        for (index, pair) in zip(operands, action.arguments).enumerated() {
+            let value = try inferValue(pair.0, environment: environment, inference: inference)
+            if pair.1.type != .any {
+                try inference.constrain(
+                    value,
+                    to: pair.1.type,
+                    message: "\(action.name) argument \(index + 1) expects \(pair.1.type.name)",
+                    at: pair.0.location
+                )
+            }
+        }
+        guard let result = action.result else {
+            if requireResult {
+                throw LongwayError("external action '\(action.name)' does not produce a value", at: location)
+            }
+            return nil
+        }
+        return result.type == .any
+            ? inference.makeVariable()
+            : inference.makeVariable(boundTo: result.type)
+    }
+
     private func inferValue(
         _ expression: Expression,
         environment: InferenceEnvironment,
@@ -598,6 +651,16 @@ struct SignatureInferrer {
                     )
                 }
                 return inference.makeVariable(boundTo: .boolean)
+            }
+            if let externalAction = catalog.actions[operation] {
+                return try inferExternalAction(
+                    externalAction,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment,
+                    inference: inference,
+                    requireResult: true
+                )!
             }
             if let function = environment.functions[operation] {
                 guard operands.count == function.parameters.count else {

@@ -39,6 +39,74 @@ open Functions/sum-to-ten.shortcut
 
 Signing is an Apple service. It may require an Apple ID, network access, and permission to share shortcuts. Longway signs the complete program before replacing any destination files.
 
+## Inspecting Shortcut actions
+
+Use `inspect-actions` to list actions from either an unsigned workflow plist or an Apple-signed `.shortcut` export:
+
+```sh
+.build/release/longway inspect-actions path/to/workflow.shortcut
+```
+
+To isolate third-party App Intent actions and save each one as a readable XML property list:
+
+```sh
+.build/release/longway inspect-actions path/to/workflow.shortcut \
+  --third-party-only -o extracted-actions
+```
+
+The output directory must be empty. Signed exports are verified with the public key from their embedded Apple signing certificate, then unpacked with macOS's `aea` and `aa` tools. Extracted action parameters can contain repository names, local paths, prompts, and other private workflow data; review them before committing or sharing the files.
+
+## Declarative action catalogs
+
+Third-party app actions are data rather than compiler code. Pass one or more versioned JSON catalogs explicitly when checking or building:
+
+```sh
+.build/release/longway check Examples/working-copy.longway \
+  --actions Actions/WorkingCopy.longway-actions.json
+
+.build/release/longway build Examples/working-copy.longway \
+  --actions Actions/WorkingCopy.longway-actions.json
+```
+
+A catalog gives each source form a typed argument list, optional result, side-effect declaration, and raw Shortcut action template. Constant fields are copied unchanged while `$longway` placeholders are rendered during compilation:
+
+```json
+{
+  "version": 1,
+  "actions": [{
+    "name": "example-echo",
+    "arguments": [{ "name": "text", "type": "text" }],
+    "result": {
+      "type": "text",
+      "outputName": "Echo",
+      "runtimeTyped": true
+    },
+    "sideEffect": false,
+    "template": {
+      "WFWorkflowActionIdentifier": "com.example.EchoIntent",
+      "WFWorkflowActionParameters": {
+        "UUID": { "$longway": "uuid" },
+        "text": {
+          "$longway": "argument",
+          "name": "text",
+          "encoding": "text-token"
+        }
+      }
+    }
+  }]
+}
+```
+
+Supported source types are `text`, `number`, `boolean`, `list`, `dictionary`, and `any`. Supported argument encodings are:
+
+- `text-token`: a `WFTextTokenString` containing a literal or action-output reference.
+- `attachment`: a `WFTextTokenAttachment`; literals are materialized first.
+- `literal`: a raw string, number, or Boolean; computed values are rejected.
+- `number`: a literal number or number action-output reference.
+- `app-entity`: a literal text identifier encoded as an App Intent entity with matching identifier, title, and subtitle.
+
+Catalog names cannot shadow built-ins, functions, or names from another loaded catalog. Arguments must be used by the template, templates must generate their action UUID, and catalog-declared side effects disable tail-call loop optimization when encountered. `Actions/WorkingCopy.longway-actions.json` demonstrates a catalog derived from an exported iOS workflow. Its generated plist is structurally verified, but the parameterized repository fields on Write and Pull still need execution on an iOS device with Working Copy installed.
+
 ## Functions
 
 Programs contain one or more `define` forms. Parameters and return values do not need type annotations:

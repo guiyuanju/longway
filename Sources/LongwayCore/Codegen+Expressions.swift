@@ -105,6 +105,18 @@ extension FunctionCompiler {
                     environment: environment
                 )
             }
+            if let externalAction = catalog.actions[operation] {
+                guard externalAction.result != nil else {
+                    throw LongwayError("external action '\(operation)' does not produce a value", at: expression.location)
+                }
+                let compiled = try compileExternalAction(
+                    externalAction,
+                    operands: operands,
+                    at: expression.location,
+                    environment: environment
+                )
+                return CompiledValue(actions: compiled.actions, value: compiled.value!)
+            }
             if let signature = signatures[operation] {
                 return try compileFunctionCall(
                     signature,
