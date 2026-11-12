@@ -90,7 +90,7 @@ struct DefinitionParser {
         role: String,
         at location: SourceLocation
     ) throws {
-        let pattern = "^[A-Za-z_][A-Za-z0-9_-]*$"
+        let pattern = #"^[\p{L}_][\p{L}\p{M}\p{N}_-]*$"#
         guard identifier.range(of: pattern, options: .regularExpression) != nil else {
             throw LongwayError("invalid \(role) name '\(identifier)'", at: location)
         }

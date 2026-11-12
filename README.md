@@ -68,10 +68,38 @@ open Functions/sum-to.shortcut
 | `(ask-text "prompt")`, `(ask-number "prompt")` | Ask for typed input |
 | `(format-current-date "format")` | Format the current date as text |
 | `(show-result value)` | Show and return a value when used last |
-| `(notification "message")`, `(open-url "https://…")`, `(wait 1.5)` | Effects |
+| `(http-get url)`, `(http-post url)`, `(http-request url "METHOD")` | Fetch URL contents; no request body |
+| `(notification message)`, `(open-url "https://…")`, `(wait 1.5)` | Effects |
 
 Booleans are `#t` and `#f`. Strings support `\n`, `\r`, `\t`, `\"`, and `\\`.
 Comparisons test adjacent pairs, so `(< 1 2 3)` means `1 < 2` and `2 < 3`.
+
+HTTP URLs accept text expressions. Literal URLs must be absolute HTTP(S) URLs;
+`http-request` takes a literal uppercase `GET`, `POST`, `PUT`, `PATCH`, `DELETE`,
+or `HEAD`. Requests have no body or custom headers in this version. Results
+remain runtime-generic: Shortcuts decodes JSON responses, so `dict-ref` can
+read a JSON object's fields. Network errors stop the shortcut; these forms do
+not return HTTP status codes or provide a configurable timeout. They wait for
+the response before running the next action. Notification messages accept
+text expressions, including dictionary fields, with explicit output wiring.
+
+```scheme
+(define (到家)
+  (let ((result (http-post "http://example.local:8765/api/v1/lights/power?on=true")))
+    (notification (dict-ref result "message"))
+    ""))
+```
+
+Function and parameter names may start with a Unicode letter or `_`, followed
+by Unicode letters, marks, numbers, `_`, or `-`. This permits Chinese shortcut
+names without renaming the generated files.
+
+HTTP/notification lowering has structural test coverage, including the URL →
+response → JSON field → notification UUID chain. The URL token shape matches
+Apple's bundled `DocumentReview.wflow`; POST and dynamic notification use the
+same action parameters as the integration catalog. iPhone execution, including
+no-body POST behavior, response decoding, and long-running server responses,
+still needs device verification.
 
 ### Types
 

@@ -167,7 +167,7 @@ struct SignatureInferrer {
             )
             return
         }
-        if environment.functions[formName] != nil {
+        if environment.functions[formName] != nil || ["http-get", "http-post", "http-request"].contains(formName) {
             _ = try inferValue(expression, environment: environment, inference: inference)
             return
         }
@@ -176,6 +176,12 @@ struct SignatureInferrer {
         if formName == "show-result" {
             try requireArgumentCount(1, action: formName, arguments: arguments, at: expression.location)
             _ = try inferValue(arguments[0], environment: environment, inference: inference)
+            return
+        }
+        if formName == "notification" {
+            try requireArgumentCount(1, action: formName, arguments: arguments, at: expression.location)
+            let value = try inferValue(arguments[0], environment: environment, inference: inference)
+            try inference.constrain(value, to: .text, message: "notification expects text", at: arguments[0].location)
             return
         }
         // The remaining statement forms take literal operands only, which

@@ -167,7 +167,7 @@ struct FunctionCompiler {
                 environment: environment
             ).actions
         }
-        if signatures[formName] != nil {
+        if signatures[formName] != nil || ["http-get", "http-post", "http-request"].contains(formName) {
             return try compileValue(expression, environment: environment).actions
         }
         return try compileAction(
@@ -273,9 +273,13 @@ struct FunctionCompiler {
             return compiledValue.actions + showResultAction(compiledValue.value)
 
         case "notification":
-            let value = try stringArgument(actionName, arguments: arguments, at: location)
-            return [ShortcutPlist.action("is.workflow.actions.notification", parameters: [
-                "WFNotificationActionBody": value,
+            try requireArgumentCount(1, action: actionName, arguments: arguments, at: location)
+            let compiled = try compileValue(arguments[0], environment: environment)
+            guard typesAreCompatible(compiled.value.type, .text) else {
+                throw LongwayError("notification expects text", at: arguments[0].location)
+            }
+            return compiled.actions + [ShortcutPlist.action("is.workflow.actions.notification", parameters: [
+                "WFNotificationActionBody": tokenString(compiled.value),
                 "WFNotificationActionSound": true
             ])]
 

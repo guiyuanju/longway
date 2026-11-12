@@ -2186,6 +2186,67 @@ final class LongwayCoreTests: XCTestCase {
         return value?["WFDictionaryFieldValueItems"] as? [[String: Any]]
     }
 
+    func testHTTPResponseWiresDictionaryMessageIntoDynamicNotification() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (到家 url)
+          (let ((response (http-post url)))
+            (notification (dict-ref response "message"))
+            ""))
+        """)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any])
+        let actions = try XCTUnwrap(plist["WFWorkflowActions"] as? [[String: Any]])
+        let request = try XCTUnwrap(actions.first { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.downloadurl" }?["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(request["WFHTTPMethod"] as? String, "POST")
+        XCTAssertNil(request["WFHTTPBodyType"])
+        func outputUUID(_ token: Any?) throws -> String {
+            let token = try XCTUnwrap(token as? [String: Any])
+            let value = try XCTUnwrap(token["Value"] as? [String: Any])
+            let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+            let attachment = try XCTUnwrap(attachments["{0, 1}"] as? [String: Any])
+            return try XCTUnwrap(attachment["OutputUUID"] as? String)
+        }
+        let input = try XCTUnwrap(actions.first?["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(try outputUUID(request["WFURL"]), input["UUID"] as? String)
+        let read = try XCTUnwrap(actions.first { action in
+            guard let parameters = action["WFWorkflowActionParameters"] as? [String: Any] else { return false }
+            return parameters["WFDictionaryKey"] as? String == "message"
+        }?["WFWorkflowActionParameters"] as? [String: Any])
+        let readInput = try XCTUnwrap(read["WFInput"] as? [String: Any])
+        let readAttachment = try XCTUnwrap(readInput["Value"] as? [String: Any])
+        XCTAssertEqual(readAttachment["OutputUUID"] as? String, request["UUID"] as? String)
+        let notification = try XCTUnwrap(actions.first { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.notification" }?["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(try outputUUID(notification["WFNotificationActionBody"]), read["UUID"] as? String)
+    }
+
+    func testHTTPMethodsValidationAndNotificationTypes() throws {
+        _ = try LongwayCompiler().compile("(define (main) (http-post \"https://example.com\") \"done\")")
+        for (form, method) in [("(http-get \"https://example.com\")", "GET"),
+                               ("(http-request \"https://example.com\" \"DELETE\")", "DELETE")] {
+            let result = try LongwayCompiler().compile("(define (main) \(form))")
+            let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any])
+            let actions = try XCTUnwrap(plist["WFWorkflowActions"] as? [[String: Any]])
+            let parameters = try XCTUnwrap(actions[0]["WFWorkflowActionParameters"] as? [String: Any])
+            XCTAssertEqual(parameters["WFHTTPMethod"] as? String, method)
+            XCTAssertEqual(textTokenLiteral(parameters["WFURL"]), "https://example.com")
+        }
+        for body in ["(http-post \"file:///tmp/x\")", "(http-get 42)",
+                     "(http-request \"https://example.com\" \"BAD\")", "(http-post)",
+                     "(notification 42) \"\"", "(notification (list 1)) \"\""] {
+            XCTAssertThrowsError(try LongwayCompiler().compile("(define (main) \(body))"))
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (notify value) (notification value) "")
+        (define (main) (notify 42))
+        """))
+        let recursive = try LongwayCompiler().compile("""
+        (define (again url)
+          (let ((response (http-post url))) (again url)))
+        """)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: recursive.data, format: nil) as? [String: Any])
+        let actions = try XCTUnwrap(plist["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
+    }
+
     private func textLiteral(in action: [String: Any]) -> String? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
         return textTokenLiteral(parameters?["WFTextActionText"])

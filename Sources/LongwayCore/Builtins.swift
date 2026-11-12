@@ -64,6 +64,9 @@ let builtins: [String: Builtin] = {
 
     var table: [String: Builtin] = [
         "not": .fixed(boolean, result: .boolean),
+        "http-get": .fixed(text, result: .any),
+        "http-post": .fixed(text, result: .any),
+        "http-request": .fixed(text, text, result: .any),
 
         "list": Builtin(operands: .variadic(minimum: 0, .unconstrained), result: .list),
         "length": .fixed(list, result: .number),

@@ -19,7 +19,8 @@ let tailCallLoopLimit = 2000
 private let tailCallResultVariableName = "#result"
 private let tailCallSideEffectingForms: Set<String> = [
     "show-result", "notification", "open-url", "wait",
-    "choose-from-list", "ask-text", "ask-number"
+    "choose-from-list", "ask-text", "ask-number",
+    "http-get", "http-post", "http-request"
 ]
 
 /// A function is loop-compiled only when its entire body is one expression

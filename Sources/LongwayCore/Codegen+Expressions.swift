@@ -78,6 +78,9 @@ extension FunctionCompiler {
                     operands: operands, at: location, environment: environment
                 )
 
+            case "http-get", "http-post", "http-request":
+                return try compileHTTPRequest(operation, operands: operands, at: location, environment: environment)
+
             case "string-append":
                 return try compileStringAppend(operands, environment: environment)
             case "number->text":
