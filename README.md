@@ -226,3 +226,15 @@ JSON dictionary for subsequent `dict-ref` calls. Guard empty lists with
 Random selection disables tail-call loop optimization to preserve evaluation
 behavior.
 
+[Examples/morning-radiko.longway](Examples/morning-radiko.longway) turns on
+lights, fetches radiko's JSON `items`, selects a random station, reads its `id`,
+and POSTs the playback URL. Replace `example.local` with your server host. The
+server must return a JSON object with an `items` array of dictionaries and
+text `id` values safe for use as query parameter values; `string-append` does
+not URL-encode them. An empty station list shows a notification and skips
+playback. Network failures stop the shortcut. The example compiles but has
+not been run on an iPhone.
+
+Install the generated shortcut, then select it in an iPhone personal automation
+scheduled daily at 06:30. Longway generates the shortcut; it does not create
+the iPhone's personal automation or configure its execution permissions.

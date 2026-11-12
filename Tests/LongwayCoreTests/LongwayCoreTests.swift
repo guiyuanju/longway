@@ -2273,6 +2273,47 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertFalse(recursiveActions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
     }
 
+    func testMorningRadikoExampleWiresJSONDictionaryItemIntoPlaybackURL() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Examples/morning-radiko.longway"), encoding: .utf8)
+        let result = try LongwayCompiler().compile(source)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any])
+        let actions = try XCTUnwrap(plist["WFWorkflowActions"] as? [[String: Any]])
+        func parameters(_ identifier: String) -> [[String: Any]] {
+            actions.filter { $0["WFWorkflowActionIdentifier"] as? String == identifier }
+                .compactMap { $0["WFWorkflowActionParameters"] as? [String: Any] }
+        }
+        func attachmentUUID(_ parameter: Any?) throws -> String {
+            let token = try XCTUnwrap(parameter as? [String: Any])
+            let value = try XCTUnwrap(token["Value"] as? [String: Any])
+            return try XCTUnwrap(value["OutputUUID"] as? String)
+        }
+        let requests = parameters("is.workflow.actions.downloadurl")
+        XCTAssertEqual(requests.compactMap { $0["WFHTTPMethod"] as? String }, ["POST", "GET", "POST"])
+        let reads = parameters("is.workflow.actions.getvalueforkey")
+        let items = try XCTUnwrap(reads.first { $0["WFDictionaryKey"] as? String == "items" })
+        XCTAssertEqual(try attachmentUUID(items["WFInput"]), requests[1]["UUID"] as? String)
+        let random = try XCTUnwrap(parameters("is.workflow.actions.getitemfromlist").first)
+        XCTAssertEqual(random["WFItemSpecifier"] as? String, "Random Item")
+        XCTAssertEqual(try attachmentUUID(random["WFInput"]), items["UUID"] as? String)
+        let id = try XCTUnwrap(reads.first { $0["WFDictionaryKey"] as? String == "id" })
+        XCTAssertEqual(try attachmentUUID(id["WFInput"]), random["UUID"] as? String)
+        let text = try XCTUnwrap(parameters("is.workflow.actions.gettext").first {
+            textTokenLiteral($0["WFTextActionText"])?.hasPrefix("http://example.local:8765/api/v1/playback/play?source=radiko&item=") == true
+        })
+        let textToken = try XCTUnwrap(text["WFTextActionText"] as? [String: Any])
+        let value = try XCTUnwrap(textToken["Value"] as? [String: Any])
+        XCTAssertTrue((value["string"] as? String)?.hasPrefix("http://example.local:8765/api/v1/playback/play?source=radiko&item=") == true)
+        let attachments = try XCTUnwrap(value["attachmentsByRange"] as? [String: Any])
+        let idAttachment = try XCTUnwrap(attachments.values.first as? [String: Any])
+        XCTAssertEqual(idAttachment["OutputUUID"] as? String, id["UUID"] as? String)
+        let playbackToken = try XCTUnwrap(requests[2]["WFURL"] as? [String: Any])
+        let playbackValue = try XCTUnwrap(playbackToken["Value"] as? [String: Any])
+        let playbackAttachments = try XCTUnwrap(playbackValue["attachmentsByRange"] as? [String: Any])
+        XCTAssertEqual((playbackAttachments["{0, 1}"] as? [String: Any])?["OutputUUID"] as? String, text["UUID"] as? String)
+        XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.number" })
+    }
+
     private func textLiteral(in action: [String: Any]) -> String? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
         return textTokenLiteral(parameters?["WFTextActionText"])

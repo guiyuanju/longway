@@ -67,6 +67,7 @@ swift test
 swift build -c release
 .build/release/longway check Examples/hello.longway
 .build/release/longway check Examples/morning.longway
+.build/release/longway check Examples/morning-radiko.longway
 .build/release/longway check Examples/math.longway
 .build/release/longway check Examples/logic.longway
 .build/release/longway check Examples/comparison.longway

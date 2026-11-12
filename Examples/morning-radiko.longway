@@ -1,0 +1,12 @@
+; Install this shortcut and choose it in a daily 06:30 personal automation.
+(define (早安)
+  (http-post "http://example.local:8765/api/v1/lights/power?on=true")
+  (let* ((sources (http-get "http://example.local:8765/api/v1/sources/radiko"))
+         (items (dict-ref sources "items")))
+    (if (empty? items)
+        (notification "No radiko stations available")
+        (let* ((station (random-item items))
+               (id (dict-ref station "id")))
+          (http-post
+            (string-append "http://example.local:8765/api/v1/playback/play?source=radiko&item=" id))))
+    ""))
