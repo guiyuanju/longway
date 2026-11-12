@@ -58,6 +58,8 @@ extension FunctionCompiler {
                 return try compileItem(operation, specifier: "First Item", operands: operands, at: location, environment: environment)
             case "last":
                 return try compileItem(operation, specifier: "Last Item", operands: operands, at: location, environment: environment)
+            case "random-item":
+                return try compileItem(operation, specifier: "Random Item", operands: operands, at: location, environment: environment)
             case "list-ref":
                 return try compileListRef(operands, at: location, environment: environment)
 

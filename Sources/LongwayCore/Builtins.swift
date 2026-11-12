@@ -73,6 +73,7 @@ let builtins: [String: Builtin] = {
         "empty?": .fixed(list, result: .boolean),
         "first": .fixed(list, result: .any),
         "last": .fixed(list, result: .any),
+        "random-item": .fixed(list, result: .any),
         "list-ref": .fixed(list, BuiltinOperand(.number, "expects a number index"), result: .any),
 
         "dict": Builtin(operands: .alternating(key: key), result: .dictionary),

@@ -58,7 +58,7 @@ open Functions/sum-to.shortcut
 | `(and a b …)`, `(or a b …)`, `(not a)` | Short-circuit Boolean logic |
 | `(list a b …)` | Build a list |
 | `(length lst)`, `(empty? lst)` | Item count, emptiness test |
-| `(list-ref lst index)`, `(first lst)`, `(last lst)` | Read an item (0-based) |
+| `(list-ref lst index)`, `(first lst)`, `(last lst)`, `(random-item lst)` | Read an item (`list-ref` is 0-based) |
 | `(dict key value …)` | Build a dictionary from alternating keys and values |
 | `(dict-ref d key)`, `(dict-set d key value)` | Read one value; answer a new dictionary |
 | `(dict-keys d)`, `(dict-values d)` | Read all keys or values as a list |
@@ -216,3 +216,13 @@ Compilation runs source → tokens → syntax → definitions → inferred signa
 Shortcut actions. `Builtins.swift` declares every built-in form's arity and
 operand types once; inference checks against that table and the reserved-name set
 derives from it, so adding a form means one table entry plus its lowering.
+
+### Random list selection
+
+`(random-item items)` uses Shortcuts' native Get Item from List with Random
+Item. It requires a list and returns a runtime-generic item, preserving a
+JSON dictionary for subsequent `dict-ref` calls. Guard empty lists with
+`empty?`; Longway does not supply a fallback for an empty random selection.
+Random selection disables tail-call loop optimization to preserve evaluation
+behavior.
+

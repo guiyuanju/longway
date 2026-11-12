@@ -2247,6 +2247,32 @@ final class LongwayCoreTests: XCTestCase {
         XCTAssertFalse(actions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
     }
 
+    func testRandomItemValidatesListInputAndPreservesGenericResult() throws {
+        let result = try LongwayCompiler().compile("""
+        (define (pick items) (random-item items))
+        """)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: result.data, format: nil) as? [String: Any])
+        let actions = try XCTUnwrap(plist["WFWorkflowActions"] as? [[String: Any]])
+        let parameters = try XCTUnwrap(actions[1]["WFWorkflowActionParameters"] as? [String: Any])
+        XCTAssertEqual(actions[1]["WFWorkflowActionIdentifier"] as? String, "is.workflow.actions.getitemfromlist")
+        XCTAssertEqual(parameters["WFItemSpecifier"] as? String, "Random Item")
+        XCTAssertNil(parameters["WFItemIndex"])
+        for body in ["(random-item)", "(random-item (list 1) (list 2))", "(random-item 1)",
+                     "(random-item \"text\")", "(random-item (dict \"id\" \"x\"))"] {
+            XCTAssertThrowsError(try LongwayCompiler().compile("(define (main) \(body))"))
+        }
+        XCTAssertThrowsError(try LongwayCompiler().compile("""
+        (define (pick items) (random-item items))
+        (define (main) (pick 42))
+        """))
+        let recursive = try LongwayCompiler().compile("""
+        (define (again items) (let ((item (random-item items))) (again items)))
+        """)
+        let recursivePlist = try XCTUnwrap(PropertyListSerialization.propertyList(from: recursive.data, format: nil) as? [String: Any])
+        let recursiveActions = try XCTUnwrap(recursivePlist["WFWorkflowActions"] as? [[String: Any]])
+        XCTAssertFalse(recursiveActions.contains { $0["WFWorkflowActionIdentifier"] as? String == "is.workflow.actions.repeat.count" })
+    }
+
     private func textLiteral(in action: [String: Any]) -> String? {
         let parameters = action["WFWorkflowActionParameters"] as? [String: Any]
         return textTokenLiteral(parameters?["WFTextActionText"])
